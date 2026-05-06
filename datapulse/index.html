@@ -5,416 +5,420 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DataPulse</title>
     <style>
-        body {
-            margin: 0;
-            overflow: hidden;
-            background-color: #02050A;
-        }
-        canvas {
-            display: block;
-            width: 100vw;
-            height: 100vh;
-        }
-        #loading {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            color: #ffffff;
-            font-family: monospace;
-            font-size: 12px;
-            pointer-events: none;
-            transition: opacity 0.5s ease;
-        }
+        body { margin: 0; overflow: hidden; background: #000; }
+        canvas { display: block; }
     </style>
-
-    <script type="importmap">
-        {
-            "imports": {
-                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
-                "lil-gui": "https://unpkg.com/lil-gui@0.19.1/dist/lil-gui.esm.js"
-            }
-        }
-    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19"></script>
 </head>
 <body>
-    <div id="loading">Initializing Neural Pathways...</div>
+<script>
+// ─────────────────────────────────────────────
+// Constants
+// ─────────────────────────────────────────────
+const MAX_FIBERS       = 150;   // pre-allocated cap per network
+const POINTS_PER_FIBER = 220;
+const WORLD_HALF_H     = 6.5;   // camera z=14, FOV=50 → 14*tan(25°)
 
-    <script type="module">
-        import * as THREE from 'three';
-        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
-        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
-        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
-        import GUI from 'lil-gui';
+// ─────────────────────────────────────────────
+// Renderer / Scene / Camera
+// ─────────────────────────────────────────────
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setClearColor(0x000000, 1);
+document.body.appendChild(renderer.domElement);
 
-        // --- Configuration & Parameters ---
-        const params = {
-            cameraSpeed: 0.1,
-            flowSpeed: 85.0,
-            maxFibers: 150,
-            pointsPerFiber: 450,
+const scene = new THREE.Scene();
 
-            nodeDistance: 511.0,
-            pinchSharpness: 3.6,
-            maxSpread: 100.0,
-            minSpread: 0.0,
-            structuralNoise: 2.5,
+const camera = new THREE.PerspectiveCamera(
+    50, window.innerWidth / window.innerHeight, 0.1, 200
+);
+camera.position.set(0, 0, 14);
 
-            particleSpeed: 0.25,
-            particleSpawnRate: 1,
+// ─────────────────────────────────────────────
+// Global parameters
+// ─────────────────────────────────────────────
+const globalParams = {
+    backgroundColor:   '#000000',
+    particleColor:     '#FF8000',
+    particleSpeed:     0.20,
+    particleSpawnRate: 1,
+};
 
-            bloomStrength: 1.0,
-            bloomRadius: 0.22,
-            bloomThreshold: 0.1,
-            lineColor: '#36547d',
-            lineOpacity: 0.4,
+// ─────────────────────────────────────────────
+// Per-network defaults  (values from screenshot)
+// ─────────────────────────────────────────────
+function defaultNet(isA) {
+    return {
+        startX: isA ? -0.28 : -0.10,
+        startY: isA ?  1.00 :  1.00,
+        endX:   isA ?  0.92 :  0.84,
+        endY:   isA ? -0.90 : -1.00,
+        curveX: 0,
+        curveY: 0,
+        twist:           isA ? 0.00 : 0.23,
+        maxSpread:       isA ? 2.84 : 2.19,
+        spreadCenter:    isA ? 0.66 : 0.59,
+        spreadSharpness: isA ? 1.00 : 1.60,
+        structuralNoise: isA ? 0.14 : 0.06,
+        lineColor:       '#51647B',
+        lineOpacity:     isA ? 0.72 : 0.64,
+        lineThickness:   0.018,   // world-space full width (~1.5 px default)
+        fiberCount:      80,
+        mode3D:          true,
+    };
+}
 
-            backgroundColor: '#000000',
-            particleColor: '#8fb4ff'
-        };
+// ─────────────────────────────────────────────
+// Fiber
+// Rendered as a billboard ribbon (MeshBasicMaterial
+// + indexed triangle strip) so lineThickness works
+// on any GPU — WebGL doesn't support linewidth > 1.
+// this.positions = centerline, read by particles.
+// ─────────────────────────────────────────────
+class Fiber {
+    constructor(material) {
+        this.maxPoints = POINTS_PER_FIBER;
+        this.positions = new Float32Array(this.maxPoints * 3); // centerline
+        this.baseAngle = Math.random() * Math.PI * 2;
+        this.noiseSeed = Math.random() * 100;
 
-        const sharedUniforms = {
-            uTime: { value: 0 },
-            uCameraX: { value: 0 }
-        };
+        // Ribbon: 2 verts per centerline point (+ / − side)
+        this.ribbonPos = new Float32Array(this.maxPoints * 2 * 3);
 
-        // --- Core Scene Setup ---
-        const canvas = document.createElement('canvas');
-        document.body.appendChild(canvas);
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position',
+            new THREE.BufferAttribute(this.ribbonPos, 3));
+        geo.attributes.position.setUsage(THREE.DynamicDrawUsage);
 
-        const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: "high-performance" });
-        renderer.setSize(window.innerWidth, window.innerHeight);
-        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-        renderer.setClearColor(0x000000, 1);
+        // One quad (2 triangles) per segment
+        const idx = new Uint32Array((this.maxPoints - 1) * 6);
+        for (let i = 0; i < this.maxPoints - 1; i++) {
+            const a = i*2, b = i*2+1, c = (i+1)*2, d = (i+1)*2+1;
+            idx[i*6]   = a; idx[i*6+1] = b; idx[i*6+2] = c;
+            idx[i*6+3] = b; idx[i*6+4] = d; idx[i*6+5] = c;
+        }
+        geo.setIndex(new THREE.BufferAttribute(idx, 1));
 
-        const scene = new THREE.Scene();
-        scene.fog = new THREE.FogExp2(0x000000, 0.004);
+        this.geometry = geo;
+        this.mesh = new THREE.Mesh(geo, material);
+        this.mesh.frustumCulled = false;
+        scene.add(this.mesh);
+    }
 
-        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 1, 1000);
-        camera.position.set(-60, 0, 140);
-        camera.lookAt(40, 0, 0);
+    update(time, p) {
+        this._centerline(time, p);
+        this._ribbon(Math.max(p.lineThickness * 0.5, 0.002));
+        this.geometry.attributes.position.needsUpdate = true;
+    }
 
-        // --- Post-Processing (Bloom) ---
-        const composer = new EffectComposer(renderer);
-        const renderPass = new RenderPass(scene, camera);
-        composer.addPass(renderPass);
+    _centerline(time, p) {
+        const hw = WORLD_HALF_H * camera.aspect;
+        const hh = WORLD_HALF_H;
 
-        const bloomPass = new UnrealBloomPass(
-            new THREE.Vector2(window.innerWidth, window.innerHeight),
-            params.bloomStrength,
-            params.bloomRadius,
-            params.bloomThreshold
-        );
-        composer.addPass(bloomPass);
+        // Bezier control points
+        const ax = p.startX * hw, ay = p.startY * hh;
+        const cx = p.endX   * hw, cy = p.endY   * hh;
+        const bx = (ax + cx) * 0.5 + p.curveX * hw;
+        const by = (ay + cy) * 0.5 + p.curveY * hh;
 
-        // --- Custom Shader Chunks for Fading ---
-        const fadeVaryingChunk = `varying float vRelativeX;`;
-        const fadeVertexChunk = `vRelativeX = position.x - uCameraX;`;
-        const fadeFragmentChunk = `
-            float fade = smoothstep(-30.0, 50.0, vRelativeX) * smoothstep(350.0, 150.0, vRelativeX);
-            gl_FragColor.a *= fade;
-        `;
+        for (let i = 0; i < this.maxPoints; i++) {
+            const t  = i / (this.maxPoints - 1);
+            const mt = 1 - t;
 
-        // --- Fiber (Line) Material ---
-        const lineMaterial = new THREE.LineBasicMaterial({
-            color: new THREE.Color(params.lineColor),
-            transparent: true,
-            opacity: params.lineOpacity,
+            // Quadratic Bezier position
+            const spx = mt*mt*ax + 2*mt*t*bx + t*t*cx;
+            const spy = mt*mt*ay + 2*mt*t*by + t*t*cy;
+
+            // Tangent → local right frame
+            const tanX = 2*(1-t)*(bx-ax) + 2*t*(cx-bx);
+            const tanY = 2*(1-t)*(by-ay) + 2*t*(cy-by);
+            const tl   = Math.sqrt(tanX*tanX + tanY*tanY) || 1;
+            const rX   = -tanY / tl,  rY = tanX / tl;
+
+            // Gaussian spread bell-curve
+            const dt     = t - p.spreadCenter;
+            const spread = p.maxSpread * Math.exp(-dt * dt * p.spreadSharpness * 10);
+
+            // Helical twist
+            const angle    = this.baseAngle + p.twist * t * Math.PI * 2;
+            const offRight = Math.cos(angle) * spread;
+            const offZ     = p.mode3D ? Math.sin(angle) * spread : 0;
+
+            // Organic noise (quieter at pinch)
+            const noiseAmt = p.structuralNoise * spread;
+            const noiseR   = Math.sin(i*0.08 + this.noiseSeed + time*0.8)  * noiseAmt;
+            const noiseZ   = p.mode3D
+                ? Math.cos(i*0.10 - this.noiseSeed + time*0.6) * noiseAmt * 0.5
+                : 0;
+
+            this.positions[i*3]   = spx + (offRight + noiseR) * rX;
+            this.positions[i*3+1] = spy + (offRight + noiseR) * rY;
+            this.positions[i*3+2] = offZ + noiseZ;
+        }
+    }
+
+    // Expand centerline to a screen-aligned ribbon of halfWidth
+    _ribbon(halfW) {
+        const c = this.positions;
+        const r = this.ribbonPos;
+        const n = this.maxPoints;
+
+        for (let i = 0; i < n; i++) {
+            // Finite-difference tangent in XY
+            const pi = Math.max(0, i-1) * 3;
+            const ni = Math.min(n-1, i+1) * 3;
+            const tx = c[ni]   - c[pi];
+            const ty = c[ni+1] - c[pi+1];
+            const tl = Math.sqrt(tx*tx + ty*ty) || 0.001;
+
+            // Normal perpendicular to tangent (XY plane)
+            const nx = -ty / tl * halfW;
+            const ny =  tx / tl * halfW;
+
+            const v0 = i * 6,  v1 = i * 6 + 3;   // two verts per point
+            r[v0]   = c[i*3] + nx;  r[v0+1] = c[i*3+1] + ny;  r[v0+2] = c[i*3+2];
+            r[v1]   = c[i*3] - nx;  r[v1+1] = c[i*3+1] - ny;  r[v1+2] = c[i*3+2];
+        }
+    }
+
+    dispose() {
+        scene.remove(this.mesh);
+        this.geometry.dispose();
+    }
+}
+
+// ─────────────────────────────────────────────
+// ParticleSystem  (unchanged — reads fiber.positions)
+// ─────────────────────────────────────────────
+class ParticleSystem {
+    constructor(fibers) {
+        this.fibers = fibers;
+        const MAX   = 2000;
+        this.max    = MAX;
+
+        this.pool = Array.from({ length: MAX }, (_, id) => ({
+            id, active: false, fiber: null, progress: 0, speed: 0,
+        }));
+        this.positions = new Float32Array(MAX * 3);
+        this.alphas    = new Float32Array(MAX);
+
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.BufferAttribute(this.positions, 3));
+        geo.setAttribute('alpha',    new THREE.BufferAttribute(this.alphas, 1));
+
+        this.material = new THREE.ShaderMaterial({
+            uniforms: { uColor: { value: new THREE.Color(globalParams.particleColor) } },
+            vertexShader: `
+                attribute float alpha; varying float vAlpha;
+                void main() {
+                    vAlpha = alpha; gl_PointSize = 2.0;
+                    gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
+                }`,
+            fragmentShader: `
+                uniform vec3 uColor; varying float vAlpha;
+                void main() {
+                    if (vAlpha < 0.01) discard;
+                    gl_FragColor = vec4(uColor, vAlpha);
+                }`,
+            transparent: true, depthWrite: false,
             blending: THREE.AdditiveBlending,
-            depthWrite: false
         });
 
-        lineMaterial.onBeforeCompile = (shader) => {
-            shader.uniforms.uCameraX = sharedUniforms.uCameraX;
-            shader.vertexShader = `
-                uniform float uCameraX;
-                ${fadeVaryingChunk}
-                ${shader.vertexShader}
-            `.replace(
-                `#include <begin_vertex>`,
-                `
-                #include <begin_vertex>
-                ${fadeVertexChunk}
-                `
-            );
-            shader.fragmentShader = `
-                ${fadeVaryingChunk}
-                ${shader.fragmentShader}
-            `.replace(
-                `#include <dithering_fragment>`,
-                `
-                #include <dithering_fragment>
-                ${fadeFragmentChunk}
-                `
-            );
-        };
+        this.mesh = new THREE.Points(geo, this.material);
+        this.mesh.frustumCulled = false;
+        scene.add(this.mesh);
+    }
 
-        // --- Classes ---
-        class Fiber {
-            constructor() {
-                this.maxPoints = params.pointsPerFiber;
-                this.positions = new Float32Array(this.maxPoints * 3);
+    spawn(progress = 0) {
+        if (!this.fibers.length) return;
+        const slot = this.pool.find(p => !p.active);
+        if (!slot) return;
+        slot.active   = true;
+        slot.fiber    = this.fibers[Math.floor(Math.random() * this.fibers.length)];
+        slot.progress = progress;
+        slot.speed    = globalParams.particleSpeed * (0.8 + Math.random() * 0.4);
+    }
 
-                const angle = Math.random() * Math.PI * 2;
-                const radius = Math.random();
+    update() {
+        let dirty = false;
+        for (let i = 0; i < this.max; i++) {
+            const p = this.pool[i];
+            if (!p.active) { this.alphas[i] = 0; continue; }
 
-                this.baseY = Math.sin(angle) * radius;
-                this.baseZ = Math.cos(angle) * radius;
-                this.noiseSeed = Math.random() * 100.0;
-
-                this.geometry = new THREE.BufferGeometry();
-                this.geometry.setAttribute('position', new THREE.BufferAttribute(this.positions, 3));
-                this.geometry.attributes.position.setUsage(THREE.DynamicDrawUsage);
-
-                this.line = new THREE.Line(this.geometry, lineMaterial);
-                this.line.frustumCulled = false;
-                scene.add(this.line);
+            p.progress += p.speed;
+            const maxP = p.fiber.maxPoints - 2;
+            if (p.progress >= maxP) {
+                p.active = false; p.fiber = null;
+                this.alphas[i] = 0; dirty = true; continue;
             }
 
-            update(time, cameraX) {
-                const length = 1500.0;
-                const startX = cameraX - 100.0;
-                const step = length / (this.maxPoints - 1);
+            const fade = Math.min(p.progress / 25, 1) *
+                         Math.min((maxP - p.progress) / 25, 1);
+            const i0 = Math.floor(p.progress), i1 = i0 + 1;
+            const t  = p.progress - i0;
+            const fp = p.fiber.positions;
 
-                for (let i = 0; i < this.maxPoints; i++) {
-                    let x = startX + i * step;
-
-                    let phase = (x - time * params.flowSpeed) / params.nodeDistance;
-                    phase = phase - Math.floor(phase);
-
-                    let smoothWave = Math.cos(phase * Math.PI * 2) * 0.5 + 0.5;
-                    let pinchFactor = Math.pow(smoothWave, params.pinchSharpness);
-                    let currentSpread = params.minSpread + (params.maxSpread - params.minSpread) * pinchFactor;
-
-                    const noiseY = Math.sin(x * 0.015 + this.noiseSeed + time * 1.2) * params.structuralNoise * pinchFactor;
-                    const noiseZ = Math.cos(x * 0.018 - this.noiseSeed + time * 1.0) * params.structuralNoise * pinchFactor;
-
-                    this.positions[i * 3]     = x;
-                    this.positions[i * 3 + 1] = this.baseY * currentSpread + noiseY;
-                    this.positions[i * 3 + 2] = this.baseZ * currentSpread + noiseZ;
-                }
-
-                this.geometry.attributes.position.needsUpdate = true;
-                this.geometry.setDrawRange(0, this.maxPoints);
-            }
+            this.positions[i*3]   = fp[i0*3]   + (fp[i1*3]   - fp[i0*3])   * t;
+            this.positions[i*3+1] = fp[i0*3+1] + (fp[i1*3+1] - fp[i0*3+1]) * t;
+            this.positions[i*3+2] = fp[i0*3+2] + (fp[i1*3+2] - fp[i0*3+2]) * t;
+            this.alphas[i]        = fade;
+            dirty                 = true;
         }
-
-        // --- Particle System ---
-        class ParticleSystem {
-            constructor(maxParticles = 5000) {
-                this.maxParticles = maxParticles;
-                this.particles = [];
-
-                this.geometry = new THREE.BufferGeometry();
-                this.positions = new Float32Array(this.maxParticles * 3);
-                this.alphas = new Float32Array(this.maxParticles);
-
-                this.geometry.setAttribute('position', new THREE.BufferAttribute(this.positions, 3));
-                this.geometry.setAttribute('alpha', new THREE.BufferAttribute(this.alphas, 1));
-
-                const material = new THREE.ShaderMaterial({
-                    uniforms: {
-                        uCameraX: sharedUniforms.uCameraX,
-                        uParticleColor: { value: new THREE.Color(params.particleColor) }
-                    },
-                    vertexShader: `
-                        uniform float uCameraX;
-                        attribute float alpha;
-                        varying float vAlpha;
-                        varying float vRelativeX;
-
-                        void main() {
-                            vAlpha = alpha;
-                            vRelativeX = position.x - uCameraX;
-                            vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-                            gl_PointSize = 2.0;
-                            gl_Position = projectionMatrix * mvPosition;
-                        }
-                    `,
-                    fragmentShader: `
-                        uniform vec3 uParticleColor;
-                        varying float vAlpha;
-                        varying float vRelativeX;
-
-                        void main() {
-                            if (vAlpha < 0.5) discard;
-                            float fade = smoothstep(-30.0, 50.0, vRelativeX) * smoothstep(350.0, 150.0, vRelativeX);
-                            gl_FragColor = vec4(uParticleColor, fade);
-                        }
-                    `,
-                    transparent: true,
-                    depthWrite: false,
-                    blending: THREE.AdditiveBlending
-                });
-
-                this.material = material;
-                this.pointsMesh = new THREE.Points(this.geometry, material);
-                this.pointsMesh.frustumCulled = false;
-                scene.add(this.pointsMesh);
-
-                for (let i = 0; i < this.maxParticles; i++) {
-                    this.particles.push({ id: i, active: false, fiber: null, progress: 0, speed: 0 });
-                }
-            }
-
-            spawn(initialProgress = 0) {
-                if (fibers.length === 0) return;
-                let p = this.particles.find(p => !p.active);
-                if (!p) return;
-                const fiber = fibers[Math.floor(Math.random() * fibers.length)];
-                p.active = true;
-                p.fiber = fiber;
-                p.progress = initialProgress;
-                p.speed = params.particleSpeed * (Math.random() * 0.4 + 0.8);
-            }
-
-            killParticle(p) {
-                p.active = false;
-                p.fiber = null;
-                this.alphas[p.id] = 0.0;
-            }
-
-            update() {
-                let attributesUpdated = false;
-
-                for (let i = 0; i < this.maxParticles; i++) {
-                    const p = this.particles[i];
-
-                    if (!p.active) {
-                        this.alphas[i] = 0.0;
-                        continue;
-                    }
-
-                    p.progress += p.speed;
-
-                    const fiber = p.fiber;
-                    if (p.progress >= fiber.maxPoints - 1) {
-                        this.killParticle(p);
-                        attributesUpdated = true;
-                        continue;
-                    }
-
-                    const i0 = Math.floor(p.progress);
-                    const i1 = i0 + 1;
-                    const t = p.progress - i0;
-
-                    const x0 = fiber.positions[i0 * 3];
-                    const y0 = fiber.positions[i0 * 3 + 1];
-                    const z0 = fiber.positions[i0 * 3 + 2];
-
-                    const x1 = fiber.positions[i1 * 3];
-                    const y1 = fiber.positions[i1 * 3 + 1];
-                    const z1 = fiber.positions[i1 * 3 + 2];
-
-                    this.positions[i * 3]     = x0 + (x1 - x0) * t;
-                    this.positions[i * 3 + 1] = y0 + (y1 - y0) * t;
-                    this.positions[i * 3 + 2] = z0 + (z1 - z0) * t;
-
-                    this.alphas[i] = 1.0;
-                    attributesUpdated = true;
-                }
-
-                if (attributesUpdated) {
-                    this.geometry.attributes.position.needsUpdate = true;
-                    this.geometry.attributes.alpha.needsUpdate = true;
-                }
-            }
+        if (dirty) {
+            this.mesh.geometry.attributes.position.needsUpdate = true;
+            this.mesh.geometry.attributes.alpha.needsUpdate    = true;
         }
+    }
 
-        // --- Initialization ---
-        let fibers = [];
-        let particleSystem;
+    dispose() {
+        scene.remove(this.mesh);
+        this.mesh.geometry.dispose();
+        this.material.dispose();
+    }
+}
 
-        function init() {
-            document.getElementById('loading').style.opacity = 0;
+// ─────────────────────────────────────────────
+// Network
+// Pre-allocates MAX_FIBERS; visibility is toggled
+// by fiberCount so changes are instant & cheap.
+// ─────────────────────────────────────────────
+class Network {
+    constructor(params) {
+        this.params = params;
 
-            for (let i = 0; i < params.maxFibers; i++) {
-                fibers.push(new Fiber());
-            }
+        this.lineMaterial = new THREE.MeshBasicMaterial({
+            color:       new THREE.Color(params.lineColor),
+            transparent: true,
+            opacity:     params.lineOpacity,
+            blending:    THREE.AdditiveBlending,
+            depthWrite:  false,
+            side:        THREE.DoubleSide,
+        });
 
-            fibers.forEach(f => f.update(0, camera.position.x));
+        // Pre-allocate full pool
+        this.allFibers = Array.from({ length: MAX_FIBERS },
+            () => new Fiber(this.lineMaterial));
 
-            particleSystem = new ParticleSystem(5000);
+        this._applyCount();
 
-            const initialParticleCount = 1500;
-            for (let i = 0; i < initialParticleCount; i++) {
-                const randomProgress = Math.random() * (params.pointsPerFiber - 1);
-                particleSystem.spawn(randomProgress);
-            }
-            particleSystem.update();
+        this.particles = new ParticleSystem(this.activeFibers);
 
-            // --- lil-gui Setup ---
-            const gui = new GUI({ title: 'Settings' });
-            gui.close();
+        // Pre-warm
+        for (let i = 0; i < 600; i++)
+            this.particles.spawn(Math.random() * (POINTS_PER_FIBER - 2));
+        this.particles.update();
+    }
 
-            const folderColors = gui.addFolder('Colors');
-            folderColors.addColor(params, 'backgroundColor').name('Background').onChange(c => {
-                renderer.setClearColor(c);
-                scene.fog.color.set(c);
-            });
-            folderColors.addColor(params, 'lineColor').name('Lines').onChange(c => {
-                lineMaterial.color.set(c);
-            });
-            folderColors.addColor(params, 'particleColor').name('Particles').onChange(c => {
-                particleSystem.material.uniforms.uParticleColor.value.set(c);
-            });
+    // Show only the first fiberCount fibers; update particle pool
+    _applyCount() {
+        const n = Math.round(this.params.fiberCount);
+        this.allFibers.forEach((f, i) => { f.mesh.visible = i < n; });
+        this.activeFibers = this.allFibers.slice(0, n);
+        if (this.particles) this.particles.fibers = this.activeFibers;
+    }
 
-            const folderStruct = gui.addFolder('Network Architecture');
-            folderStruct.add(params, 'nodeDistance', 100, 800, 1).name('Node Distance');
-            folderStruct.add(params, 'pinchSharpness', 1.0, 8.0, 0.1).name('Pinch Sharpness');
-            folderStruct.add(params, 'maxSpread', 10.0, 150.0, 1.0).name('Bundle Spread');
-            folderStruct.add(params, 'minSpread', 0.0, 10.0, 0.1).name('Pinch Width');
-            folderStruct.add(params, 'structuralNoise', 0.0, 10.0, 0.1).name('Organic Noise');
+    update(time) {
+        const n = Math.round(this.params.fiberCount);
+        for (let i = 0; i < n; i++)
+            this.allFibers[i].update(time, this.params);
 
-            const folderSim = gui.addFolder('Simulation Dynamics');
-            folderSim.add(params, 'cameraSpeed', 0.0, 5.0, 0.01).name('Camera Panning');
-            folderSim.add(params, 'flowSpeed', -200.0, 300.0, 1.0).name('Structural Flow Right');
-            folderSim.add(params, 'particleSpeed', 0.0, 3.0, 0.01).name('Data Flow Speed');
-            folderSim.add(params, 'particleSpawnRate', 0, 20, 1).name('Spawn Density');
+        for (let i = 0; i < globalParams.particleSpawnRate; i++)
+            this.particles.spawn(0);
+        this.particles.update();
+    }
 
-            const folderRender = gui.addFolder('Post-Processing');
-            folderRender.add(bloomPass, 'strength', 0.0, 3.0, 0.1).name('Bloom Strength');
-            folderRender.add(bloomPass, 'radius', 0.0, 1.0, 0.01).name('Bloom Radius');
+    dispose() {
+        this.allFibers.forEach(f => f.dispose());
+        this.particles.dispose();
+        this.lineMaterial.dispose();
+    }
+}
 
-            window.addEventListener('resize', onWindowResize);
-            animate();
-        }
+// ─────────────────────────────────────────────
+// Instantiate
+// ─────────────────────────────────────────────
+const paramsA = defaultNet(true);
+const paramsB = defaultNet(false);
+const netA    = new Network(paramsA);
+const netB    = new Network(paramsB);
 
-        function onWindowResize() {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
-            composer.setSize(window.innerWidth, window.innerHeight);
-        }
+// ─────────────────────────────────────────────
+// GUI
+// ─────────────────────────────────────────────
+window.onload = () => {
+    const gui = new lil.GUI({ title: 'DataPulse' });
+    gui.close();
 
-        // --- Main Loop ---
-        const clock = new THREE.Clock();
+    const fCol = gui.addFolder('Colors');
+    fCol.addColor(globalParams, 'backgroundColor').name('Background')
+        .onChange(c => renderer.setClearColor(c));
+    fCol.addColor(globalParams, 'particleColor').name('Particles')
+        .onChange(c => {
+            netA.particles.material.uniforms.uColor.value.set(c);
+            netB.particles.material.uniforms.uColor.value.set(c);
+        });
 
-        function animate() {
-            requestAnimationFrame(animate);
+    const fPart = gui.addFolder('Particles');
+    fPart.add(globalParams, 'particleSpeed',     0, 3,  0.01).name('Speed');
+    fPart.add(globalParams, 'particleSpawnRate', 0, 20, 1).name('Spawn Rate');
 
-            const time = clock.getElapsedTime();
-            sharedUniforms.uTime.value = time;
+    function buildNetFolder(label, p, net) {
+        const f = gui.addFolder(label);
 
-            camera.position.x += params.cameraSpeed;
-            sharedUniforms.uCameraX.value = camera.position.x;
+        f.addColor(p, 'lineColor').name('Line Color')
+            .onChange(c => net.lineMaterial.color.set(c));
+        f.add(p, 'lineOpacity', 0, 1, 0.01).name('Opacity')
+            .onChange(v => { net.lineMaterial.opacity = v; });
+        f.add(p, 'lineThickness', 0.005, 0.5, 0.005).name('Line Thickness');
+        f.add(p, 'fiberCount', 1, MAX_FIBERS, 1).name('Fiber Count')
+            .onChange(() => net._applyCount());
+        f.add(p, 'mode3D').name('3D Mode');
 
-            camera.position.y = Math.sin(time * 0.2) * 8;
-            camera.position.z = 140 + Math.cos(time * 0.15) * 10;
-            camera.lookAt(camera.position.x + 100, 0, 0);
+        const fPos = f.addFolder('Position');
+        fPos.add(p, 'startX', -1, 1, 0.01).name('Start X');
+        fPos.add(p, 'startY', -1, 1, 0.01).name('Start Y');
+        fPos.add(p, 'endX',   -1, 1, 0.01).name('End X');
+        fPos.add(p, 'endY',   -1, 1, 0.01).name('End Y');
+        fPos.add(p, 'curveX', -1, 1, 0.01).name('Curve X');
+        fPos.add(p, 'curveY', -1, 1, 0.01).name('Curve Y');
 
-            fibers.forEach(f => f.update(time, camera.position.x));
+        const fShape = f.addFolder('Shape');
+        fShape.add(p, 'twist',           -4, 4, 0.01).name('Twist');
+        fShape.add(p, 'maxSpread',        0, 5, 0.01).name('Max Spread');
+        fShape.add(p, 'spreadCenter',     0, 1, 0.01).name('Spread Center');
+        fShape.add(p, 'spreadSharpness', 0.5, 8, 0.1).name('Spread Sharpness');
+        fShape.add(p, 'structuralNoise',  0, 2, 0.01).name('Organic Noise');
+    }
 
-            for (let i = 0; i < params.particleSpawnRate; i++) {
-                particleSystem.spawn(0);
-            }
-            particleSystem.update();
+    buildNetFolder('Network A', paramsA, netA);
+    buildNetFolder('Network B', paramsB, netB);
 
-            composer.render();
-        }
+    animate();
+};
 
-        window.onload = init;
-    </script>
+// ─────────────────────────────────────────────
+// Loop
+// ─────────────────────────────────────────────
+const clock = new THREE.Clock();
+
+function animate() {
+    requestAnimationFrame(animate);
+    const time = clock.getElapsedTime();
+    netA.update(time);
+    netB.update(time);
+    renderer.render(scene, camera);
+}
+
+// ─────────────────────────────────────────────
+// Resize
+// ─────────────────────────────────────────────
+window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
 </body>
 </html>
