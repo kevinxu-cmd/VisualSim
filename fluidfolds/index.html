@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fluid Folds</title>
+    <style>
+        body { margin: 0; padding: 0; overflow: hidden; background: #000; }
+        canvas { display: block; width: 100vw; height: 100vh; }
+
+        #gradient-bar {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(8px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            padding: 8px 12px;
+            border-radius: 10px;
+            font-family: monospace;
+            font-size: 11px;
+            color: rgba(255, 255, 255, 0.6);
+            z-index: 100;
+            width: min(680px, 92vw);
+            box-sizing: border-box;
+        }
+        #gradient-input {
+            flex: 1;
+            background: rgba(255, 255, 255, 0.07);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            color: #fff;
+            padding: 5px 8px;
+            border-radius: 5px;
+            font-family: monospace;
+            font-size: 10px;
+            outline: none;
+            min-width: 0;
+        }
+        #gradient-input:focus { border-color: rgba(255, 255, 255, 0.4); }
+        #gradient-preview {
+            width: 44px;
+            height: 22px;
+            border-radius: 4px;
+            flex-shrink: 0;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+        }
+        #apply-btn {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: #fff;
+            padding: 5px 10px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-family: monospace;
+            font-size: 10px;
+            white-space: nowrap;
+            flex-shrink: 0;
+            transition: background 0.15s;
+        }
+        #apply-btn:hover { background: rgba(255, 255, 255, 0.22); }
+
+        #export-btn {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(8px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: #fff;
+            padding: 7px 13px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-family: monospace;
+            font-size: 11px;
+            z-index: 100;
+            transition: background 0.15s;
+        }
+        #export-btn:hover { background: rgba(255, 255, 255, 0.15); }
+    </style>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19"></script>
+</head>
+<body>
+
+    <div id="gradient-bar">
+        <span>Gradient</span>
+        <input id="gradient-input" type="text"
+            value="linear-gradient(180deg, #FF8000 0%, #0B0F1A 51.92%, #FBFBFA 100%)" />
+        <div id="gradient-preview"></div>
+        <button id="apply-btn">Apply</button>
+    </div>
+    <button id="export-btn">Export PNG</button>
+
+    <script>
+    // -------------------------------------------------------------------------
+    // Gradient Parsing & Texture (CanvasTexture)
+    // -------------------------------------------------------------------------
+
+    const gradCanvas = document.createElement('canvas');
+    gradCanvas.width = 256;
+    gradCanvas.height = 2;
+    const gradCtx = gradCanvas.getContext('2d');
+
+    const gradientTexture = new THREE.CanvasTexture(gradCanvas);
+    gradientTexture.minFilter = THREE.LinearFilter;
+    gradientTexture.magFilter = THREE.LinearFilter;
+
+    function parseGradientStops(str) {
+        const stops = [];
+        const re = /(#[0-9a-fA-F]{3,8})\s+(\d+(?:\.\d+)?)%/g;
+        let m;
+        while ((m = re.exec(str)) !== null) {
+            stops.push({ color: m[1], pos: parseFloat(m[2]) / 100 });
+        }
+        stops.sort((a, b) => a.pos - b.pos);
+        return stops;
+    }
+
+    function applyGradientString(str) {
+        const stops = parseGradientStops(str);
+        if (stops.length < 2) return;
+
+        const grd = gradCtx.createLinearGradient(0, 0, 256, 0);
+        stops.forEach(s => grd.addColorStop(s.pos, s.color));
+        gradCtx.fillStyle = grd;
+        gradCtx.fillRect(0, 0, 256, 2);
+
+        gradientTexture.needsUpdate = true;
+        document.getElementById('gradient-preview').style.background = str;
+    }
+
+    const defaultGradient = document.getElementById('gradient-input').value;
+    applyGradientString(defaultGradient);
+
+    // -------------------------------------------------------------------------
+    // Three.js Scene
+    // -------------------------------------------------------------------------
+    const scene = new THREE.Scene();
+    const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 10);
+    camera.position.z = 1;
+
+    const renderer = new THREE.WebGLRenderer({
+        antialias: true,
+        alpha: false,
+        preserveDrawingBuffer: true
+    });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    document.body.appendChild(renderer.domElement);
+
+    // -------------------------------------------------------------------------
+    // Config
+    // -------------------------------------------------------------------------
+    const config = {
+        timeScale: 0.6,
+        viewScale: 0.9193,
+        detail: 0.7007,
+        shiftRate: 0.834,
+        shiftAmp: 0.7005
+    };
+
+    // -------------------------------------------------------------------------
+    // Shaders
+    // -------------------------------------------------------------------------
+    const vertexShader = `
+        void main() {
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+    `;
+
+    const fragmentShader = `
+        uniform vec3 uResolution;
+        uniform float uTime;
+        uniform sampler2D u_gradient;
+
+        uniform float u_time_scale;
+        uniform float u_view_scale;
+        uniform float u_detail;
+        uniform float u_shift_rate;
+        uniform float u_shift_amp;
+
+        void main() {
+            vec2 fragCoord = gl_FragCoord.xy;
+            vec2 resolution = uResolution.xy;
+            float minRes = min(resolution.x, resolution.y);
+            vec2 normCoord = (fragCoord * 2.0 - resolution) / minRes;
+            normCoord *= u_view_scale;
+
+            float t = uTime * u_time_scale * 0.3;
+            float shiftT = uTime * u_shift_rate * 0.5;
+
+            vec2 phase = vec2(-t * 0.5, 0.0);
+            vec2 pos = normCoord;
+
+            for (float j = 0.0; j < 8.0; j += 1.0) {
+                vec2 offset = vec2(sin(shiftT + j * 1.3), cos(shiftT - j * 1.1)) * u_shift_amp;
+                vec2 p = pos + offset;
+                phase.y += cos(j - phase.x - p.x * u_detail);
+                phase.x += sin(p.y * u_detail + phase.y);
+            }
+            phase.x += t * 0.5;
+
+            vec3 color = vec3(
+                cos(normCoord.x * phase.x + normCoord.y * phase.y) * 0.6 + 0.4,
+                cos(phase.y + phase.x) * 0.5 + 0.5,
+                0.0
+            );
+            color.b = cos(phase.y + phase.x) * 0.5 + 0.5;
+            color = cos(color * cos(vec3(phase.x, phase.y, 2.5)) * 0.5 + 0.5);
+
+            float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+            color = texture2D(u_gradient, vec2(clamp(luma, 0.0, 1.0), 0.5)).rgb;
+
+            gl_FragColor = vec4(color, 1.0);
+        }
+    `;
+
+    const material = new THREE.ShaderMaterial({
+        vertexShader,
+        fragmentShader,
+        uniforms: {
+            uResolution: { value: new THREE.Vector3(window.innerWidth, window.innerHeight, 1.0) },
+            uTime:        { value: 0.0 },
+            u_gradient:   { value: gradientTexture },
+            u_time_scale: { value: config.timeScale },
+            u_view_scale: { value: config.viewScale },
+            u_detail:     { value: config.detail },
+            u_shift_rate: { value: config.shiftRate },
+            u_shift_amp:  { value: config.shiftAmp }
+        }
+    });
+
+    scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material));
+
+    // -------------------------------------------------------------------------
+    // Event listeners
+    // -------------------------------------------------------------------------
+    document.getElementById('apply-btn').addEventListener('click', () => {
+        applyGradientString(document.getElementById('gradient-input').value.trim());
+    });
+    document.getElementById('gradient-input').addEventListener('keydown', e => {
+        if (e.key === 'Enter') applyGradientString(e.target.value.trim());
+    });
+    document.getElementById('export-btn').addEventListener('click', () => {
+        const a = document.createElement('a');
+        a.download = `fluidfolds-${Date.now()}.png`;
+        a.href = renderer.domElement.toDataURL('image/png');
+        a.click();
+    });
+
+    // -------------------------------------------------------------------------
+    // GUI
+    // -------------------------------------------------------------------------
+    window.onload = () => {
+        const gui = new lil.GUI({ title: 'Fluid Folds' });
+        gui.close();
+
+        const motionFolder = gui.addFolder('Motion');
+        motionFolder.add(config, 'timeScale', 0.0, 3.0).name('Time Scale')
+            .onChange(v => material.uniforms.u_time_scale.value = v);
+        motionFolder.add(config, 'viewScale', 0.1, 3.0).name('View Scale')
+            .onChange(v => material.uniforms.u_view_scale.value = v);
+
+        const fractalFolder = gui.addFolder('Fractal');
+        fractalFolder.add(config, 'detail', 0.1, 5.0).name('Detail')
+            .onChange(v => material.uniforms.u_detail.value = v);
+        fractalFolder.add(config, 'shiftRate', 0.0, 2.0).name('Shift Rate')
+            .onChange(v => material.uniforms.u_shift_rate.value = v);
+        fractalFolder.add(config, 'shiftAmp', 0.0, 1.5).name('Shift Amplitude')
+            .onChange(v => material.uniforms.u_shift_amp.value = v);
+
+        animate();
+    };
+
+    // -------------------------------------------------------------------------
+    // Resize & loop
+    // -------------------------------------------------------------------------
+    window.addEventListener('resize', () => {
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        material.uniforms.uResolution.value.set(window.innerWidth, window.innerHeight, 1.0);
+    });
+
+    const clock = new THREE.Clock();
+
+    function animate() {
+        requestAnimationFrame(animate);
+        material.uniforms.uTime.value = clock.getElapsedTime();
+        renderer.render(scene, camera);
+    }
+    </script>
+</body>
+</html>

@@ -1,0 +1,1296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Logomark Background Builder</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;550;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      display: flex;
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      color: #0B0F1A;
+      -webkit-font-smoothing: antialiased;
+      font-feature-settings: 'cv11', 'ss01';
+      overflow: hidden;
+    }
+
+    /* ------- canvas (left) ------- */
+    .canvas {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+      transition: background-color 120ms ease;
+    }
+    .bg-layer {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      mask-repeat: repeat;
+      -webkit-mask-repeat: repeat;
+      mask-position: 0 0;
+      -webkit-mask-position: 0 0;
+    }
+    .canvas-overlay {
+      position: absolute;
+      left: 24px;
+      bottom: 24px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px 8px 10px;
+      background: rgba(255,255,255,0.72);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      border: 1px solid rgba(15,23,42,0.06);
+      border-radius: 10px;
+      font-size: 12px;
+      font-weight: 500;
+      letter-spacing: -0.005em;
+      color: #475569;
+    }
+    .canvas-overlay .dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: #FF8000;
+    }
+
+    /* ------- panel (right) ------- */
+    .panel {
+      width: 340px;
+      flex-shrink: 0;
+      background: #FFFFFF;
+      border-left: 1px solid #E5E7EB;
+      display: flex;
+      flex-direction: column;
+      box-shadow: -1px 0 2px rgba(15,23,42,0.02);
+    }
+    .panel-header {
+      padding: 18px 20px 14px;
+      border-bottom: 1px solid #EEF0F3;
+    }
+    .panel-title {
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      color: #0B0F1A;
+    }
+    .panel-sub {
+      margin-top: 2px;
+      font-size: 12px;
+      color: #64748B;
+      letter-spacing: -0.003em;
+    }
+    .panel-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 4px 0 12px;
+    }
+    .group {
+      padding: 14px 20px 16px;
+      border-bottom: 1px solid #F1F3F5;
+    }
+    .group:last-child { border-bottom: none; }
+    .group-title {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #94A3B8;
+      margin-bottom: 12px;
+    }
+    .row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 7px 0;
+    }
+    .row-label {
+      font-size: 12.5px;
+      font-weight: 500;
+      color: #334155;
+      letter-spacing: -0.005em;
+      flex-shrink: 0;
+    }
+    .row-value {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 11px;
+      color: #64748B;
+      min-width: 42px;
+      text-align: right;
+    }
+
+    /* sliders */
+    .slider-row {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 8px 0;
+    }
+    .slider-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    input[type=range] {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 100%;
+      height: 4px;
+      background: #E5E7EB;
+      border-radius: 999px;
+      outline: none;
+      cursor: pointer;
+    }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 14px; height: 14px;
+      border-radius: 50%;
+      background: #0B0F1A;
+      border: 2px solid #FFFFFF;
+      box-shadow: 0 1px 2px rgba(15,23,42,0.18), 0 0 0 1px rgba(15,23,42,0.08);
+      cursor: pointer;
+      transition: transform 80ms ease;
+    }
+    input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.08); }
+    input[type=range]::-webkit-slider-thumb:active { transform: scale(0.96); }
+    input[type=range]::-moz-range-thumb {
+      width: 14px; height: 14px;
+      border-radius: 50%;
+      background: #0B0F1A;
+      border: 2px solid #FFFFFF;
+      box-shadow: 0 1px 2px rgba(15,23,42,0.18), 0 0 0 1px rgba(15,23,42,0.08);
+      cursor: pointer;
+    }
+
+    /* color picker */
+    .color-pick {
+      position: relative;
+      width: 28px; height: 28px;
+      border-radius: 8px;
+      border: 1px solid rgba(15,23,42,0.08);
+      box-shadow: inset 0 0 0 2px #FFFFFF, 0 1px 2px rgba(15,23,42,0.06);
+      overflow: hidden;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .color-pick input[type=color] {
+      position: absolute;
+      inset: -4px;
+      width: calc(100% + 8px);
+      height: calc(100% + 8px);
+      border: none;
+      padding: 0;
+      cursor: pointer;
+      background: transparent;
+    }
+    .color-pick input[type=color]::-webkit-color-swatch-wrapper { padding: 0; }
+    .color-pick input[type=color]::-webkit-color-swatch { border: none; border-radius: 0; }
+    .color-trio {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .color-trio .hex {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 11px;
+      color: #64748B;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+    }
+
+    /* segmented control */
+    .segmented {
+      display: inline-flex;
+      padding: 2px;
+      background: #F1F3F5;
+      border-radius: 8px;
+      gap: 0;
+    }
+    .segmented button {
+      border: none;
+      background: transparent;
+      padding: 5px 12px;
+      font-size: 12px;
+      font-weight: 500;
+      letter-spacing: -0.005em;
+      color: #64748B;
+      cursor: pointer;
+      border-radius: 6px;
+      transition: background 120ms ease, color 120ms ease, box-shadow 120ms ease;
+      font-family: inherit;
+    }
+    .segmented button.active {
+      background: #FFFFFF;
+      color: #0B0F1A;
+      box-shadow: 0 1px 2px rgba(15,23,42,0.08), 0 0 0 1px rgba(15,23,42,0.04);
+    }
+
+    /* toggle switch */
+    .switch {
+      position: relative;
+      display: inline-block;
+      width: 32px;
+      height: 18px;
+      cursor: pointer;
+    }
+    .switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+    .switch-track {
+      position: absolute;
+      inset: 0;
+      background: #E5E7EB;
+      border-radius: 999px;
+      transition: background 140ms ease;
+    }
+    .switch-thumb {
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 14px; height: 14px;
+      background: #FFFFFF;
+      border-radius: 50%;
+      box-shadow: 0 1px 2px rgba(15,23,42,0.2);
+      transition: left 140ms cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    .switch input:checked ~ .switch-track { background: #0B0F1A; }
+    .switch input:checked ~ .switch-thumb { left: 16px; }
+
+    /* buttons */
+    .panel-actions {
+      padding: 14px 20px 16px;
+      border-top: 1px solid #EEF0F3;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      background: #FAFBFC;
+    }
+    .actions-row {
+      display: flex;
+      gap: 8px;
+    }
+    .actions-row .btn { flex: 1; }
+    button.btn {
+      flex: 1;
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-size: 12.5px;
+      font-weight: 500;
+      letter-spacing: -0.005em;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: background 120ms ease, color 120ms ease, border-color 120ms ease, transform 80ms ease;
+      font-family: inherit;
+    }
+    button.btn:active { transform: scale(0.98); }
+    button.btn.secondary {
+      background: #FFFFFF;
+      color: #334155;
+      border-color: #E5E7EB;
+    }
+    button.btn.secondary:hover { background: #F8FAFC; border-color: #CBD5E1; }
+    button.btn.primary {
+      background: #0B0F1A;
+      color: #FFFFFF;
+    }
+    button.btn.primary:hover { background: #1E293B; }
+    button.btn.primary.copied {
+      background: #047857;
+    }
+
+    /* tiny inline disabled state */
+    .row.disabled, .slider-row.disabled {
+      opacity: 0.45;
+      pointer-events: none;
+    }
+
+    /* gradient bar preview */
+    .gradient-preview {
+      position: relative;
+      height: 36px;
+      border-radius: 8px;
+      margin: 4px 0 12px;
+      overflow: hidden;
+      border: 1px solid rgba(15,23,42,0.06);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.4);
+      background-image:
+        linear-gradient(45deg, #F1F3F5 25%, transparent 25%),
+        linear-gradient(-45deg, #F1F3F5 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #F1F3F5 75%),
+        linear-gradient(-45deg, transparent 75%, #F1F3F5 75%);
+      background-size: 12px 12px;
+      background-position: 0 0, 0 6px, 6px -6px, -6px 0;
+    }
+    .gradient-preview-fill {
+      position: absolute;
+      inset: 0;
+    }
+
+    /* stops list */
+    .stops {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+    .stop {
+      display: grid;
+      grid-template-columns: 24px 1fr auto auto;
+      align-items: center;
+      gap: 10px;
+      padding: 6px 8px 6px 6px;
+      background: #FAFBFC;
+      border: 1px solid #EEF0F3;
+      border-radius: 8px;
+      transition: border-color 120ms ease, background 120ms ease;
+    }
+    .stop:hover { border-color: #E2E8F0; }
+    .stop .color-pick {
+      width: 22px; height: 22px;
+      border-radius: 6px;
+    }
+    .stop input[type=range] {
+      height: 4px;
+    }
+    .stop .pos {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 11px;
+      color: #64748B;
+      min-width: 32px;
+      text-align: right;
+      letter-spacing: 0.01em;
+    }
+    .stop-remove {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 22px; height: 22px;
+      border: none;
+      background: transparent;
+      color: #94A3B8;
+      cursor: pointer;
+      border-radius: 6px;
+      font-family: inherit;
+      font-size: 14px;
+      line-height: 1;
+      transition: background 120ms ease, color 120ms ease;
+    }
+    .stop-remove:hover {
+      background: #FEE2E2;
+      color: #DC2626;
+    }
+    .stop-remove[disabled] {
+      opacity: 0.3;
+      cursor: not-allowed;
+      pointer-events: none;
+    }
+
+    .add-stop {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      width: 100%;
+      padding: 7px 10px;
+      background: #FFFFFF;
+      border: 1px dashed #CBD5E1;
+      border-radius: 8px;
+      color: #475569;
+      font-size: 12px;
+      font-weight: 500;
+      letter-spacing: -0.005em;
+      cursor: pointer;
+      font-family: inherit;
+      transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+    }
+    .add-stop:hover {
+      background: #F8FAFC;
+      border-color: #94A3B8;
+      color: #0B0F1A;
+    }
+    .add-stop[disabled] {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    .add-stop .plus {
+      width: 14px; height: 14px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      line-height: 1;
+    }
+
+    /* group title with right-aligned action */
+    .group-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    .group-head .group-title { margin-bottom: 0; }
+    .title-action {
+      background: transparent;
+      border: none;
+      padding: 0;
+      font-family: inherit;
+      font-size: 11px;
+      font-weight: 500;
+      color: #64748B;
+      letter-spacing: -0.005em;
+      cursor: pointer;
+      transition: color 120ms ease;
+    }
+    .title-action:hover { color: #0B0F1A; }
+
+    /* paste dialog */
+    .paste-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.32);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 50;
+    }
+    .paste-overlay.open { display: flex; }
+    .paste-dialog {
+      width: 460px;
+      max-width: calc(100vw - 32px);
+      background: #FFFFFF;
+      border-radius: 14px;
+      box-shadow: 0 12px 40px -8px rgba(15,23,42,0.24), 0 4px 12px -4px rgba(15,23,42,0.12);
+      padding: 22px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .paste-dialog h2 {
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      color: #0B0F1A;
+    }
+    .paste-dialog p {
+      font-size: 12.5px;
+      color: #64748B;
+      letter-spacing: -0.005em;
+      line-height: 1.45;
+    }
+    .paste-dialog textarea {
+      width: 100%;
+      min-height: 120px;
+      padding: 10px 12px;
+      border: 1px solid #E5E7EB;
+      border-radius: 8px;
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 12px;
+      color: #0B0F1A;
+      resize: vertical;
+      outline: none;
+      transition: border-color 120ms ease, box-shadow 120ms ease;
+    }
+    .paste-dialog textarea:focus {
+      border-color: #0B0F1A;
+      box-shadow: 0 0 0 3px rgba(11,15,26,0.06);
+    }
+    .paste-dialog .err {
+      color: #DC2626;
+      font-size: 12px;
+      letter-spacing: -0.005em;
+    }
+    .paste-dialog .actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+  </style>
+</head>
+<body>
+  <main class="canvas" id="canvas">
+    <div class="bg-layer" id="bg"></div>
+    <div class="canvas-overlay">
+      <span class="dot"></span>
+      <span>Logomark background</span>
+    </div>
+  </main>
+
+  <aside class="panel">
+    <div class="panel-header">
+      <div class="panel-title">Background</div>
+      <div class="panel-sub">Tessellated logomark with gradient mask</div>
+    </div>
+
+    <div class="panel-body">
+
+      <div class="group">
+        <div class="group-title">Pattern</div>
+
+        <div class="slider-row">
+          <div class="slider-head">
+            <span class="row-label">Icon size</span>
+            <span class="row-value" id="v-iconSize">28px</span>
+          </div>
+          <input type="range" id="iconSize" min="4" max="96" step="1" value="28" />
+        </div>
+
+        <div class="slider-row">
+          <div class="slider-head">
+            <span class="row-label">Tile spacing X</span>
+            <span class="row-value" id="v-spacingX">14px</span>
+          </div>
+          <input type="range" id="spacingX" min="-80" max="80" step="1" value="14" />
+        </div>
+
+        <div class="slider-row">
+          <div class="slider-head">
+            <span class="row-label">Tile spacing Y</span>
+            <span class="row-value" id="v-spacingY">14px</span>
+          </div>
+          <input type="range" id="spacingY" min="-80" max="80" step="1" value="14" />
+        </div>
+
+        <div class="slider-row">
+          <div class="slider-head">
+            <span class="row-label">Rotation</span>
+            <span class="row-value" id="v-rotation">0°</span>
+          </div>
+          <input type="range" id="rotation" min="-180" max="180" step="1" value="0" />
+        </div>
+
+        <div class="row">
+          <span class="row-label">Stagger rows</span>
+          <label class="switch">
+            <input type="checkbox" id="stagger" />
+            <span class="switch-track"></span>
+            <span class="switch-thumb"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="group-head">
+          <div class="group-title">Gradient</div>
+          <button class="title-action" id="openPaste">Paste CSS</button>
+        </div>
+
+        <div class="gradient-preview">
+          <div class="gradient-preview-fill" id="gradientPreview"></div>
+        </div>
+
+        <div class="row">
+          <span class="row-label">Type</span>
+          <div class="segmented" id="gradientType">
+            <button data-value="linear" class="active">Linear</button>
+            <button data-value="radial">Radial</button>
+            <button data-value="conic">Conic</button>
+          </div>
+        </div>
+
+        <div class="slider-row" id="angleRow">
+          <div class="slider-head">
+            <span class="row-label">Angle</span>
+            <span class="row-value" id="v-angle">135°</span>
+          </div>
+          <input type="range" id="angle" min="0" max="360" step="1" value="135" />
+        </div>
+
+        <div class="stops" id="stops"></div>
+
+        <button class="add-stop" id="addStop">
+          <span class="plus">+</span>
+          <span>Add color stop</span>
+        </button>
+      </div>
+
+      <div class="group">
+        <div class="group-title">Background</div>
+
+        <div class="row">
+          <span class="row-label">Background color</span>
+          <div class="color-trio">
+            <span class="hex" id="hex-bgColor">#F6F7F9</span>
+            <span class="color-pick">
+              <input type="color" id="bgColor" value="#F6F7F9" />
+            </span>
+          </div>
+        </div>
+
+        <div class="slider-row">
+          <div class="slider-head">
+            <span class="row-label">Icon opacity</span>
+            <span class="row-value" id="v-opacity">100%</span>
+          </div>
+          <input type="range" id="opacity" min="0" max="100" step="1" value="100" />
+        </div>
+      </div>
+
+    </div>
+
+    <div class="panel-actions">
+      <div class="actions-row">
+        <button class="btn secondary" id="reset">Reset</button>
+        <button class="btn primary" id="copy">Copy CSS</button>
+      </div>
+      <div class="actions-row">
+        <button class="btn secondary" id="exportPng">Export PNG</button>
+        <button class="btn secondary" id="exportWebp">Export WebP</button>
+      </div>
+    </div>
+  </aside>
+
+  <div class="paste-overlay" id="pasteOverlay">
+    <div class="paste-dialog">
+      <h2>Paste a CSS gradient</h2>
+      <p>Paste any <code>linear-gradient</code>, <code>radial-gradient</code>, or <code>conic-gradient</code> declaration. Hex, <code>rgb()</code>, <code>hsl()</code>, and named colors are all supported.</p>
+      <textarea id="pasteInput" placeholder="linear-gradient(135deg, #FF8000 0%, #0B0F1A 100%)" spellcheck="false" autocomplete="off"></textarea>
+      <div class="err" id="pasteErr" style="display:none;"></div>
+      <div class="actions">
+        <button class="btn secondary" id="pasteCancel">Cancel</button>
+        <button class="btn primary" id="pasteApply">Apply</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    /* Logomark paths from Logomark-light.svg, viewBox 0 0 64 64 */
+    const ICON_PATHS = [
+      'M17.4614 14.5295C15.3863 14.5298 13.681 16.1682 13.5386 18.2815L13.5171 18.6038V21.6213L37.7046 35.7463C37.7108 35.4352 37.7194 35.0294 37.7241 34.5608C37.7352 33.4595 37.7352 32.0123 37.6909 30.6243C37.6059 27.9606 36.3569 25.6018 34.4712 24.0227L18.9731 14.8303C18.5218 14.6319 18.0054 14.5295 17.4614 14.5295ZM38.6118 62.7258L38.0151 62.3694L12.7661 47.2434H12.7651C9.57852 45.5937 7.39115 42.2173 7.39111 38.301V18.2551C7.39111 12.7392 11.7394 8.25024 17.1284 8.25024H17.1724C19.0031 8.25024 20.7184 8.77399 22.1782 9.67798L22.1802 9.67896C22.182 9.68005 22.1853 9.68167 22.189 9.68384C22.1964 9.68821 22.2076 9.69476 22.2222 9.70337C22.2514 9.72056 22.2946 9.74626 22.3511 9.77954C22.4644 9.84632 22.6312 9.94459 22.8433 10.0696C23.2678 10.3198 23.8763 10.6784 24.6089 11.1106C26.0741 11.9749 28.039 13.1353 30.0376 14.3176C34.0254 16.6767 38.1715 19.1394 38.7241 19.5061C41.2946 21.212 43.5776 23.6947 43.8159 27.5676C43.8498 28.1192 43.8495 30.4202 43.8413 32.5588C43.8372 33.6339 43.8318 34.6757 43.8267 35.4485C43.8241 35.8346 43.8215 36.1537 43.8198 36.3762C43.819 36.4874 43.8183 36.5747 43.8179 36.634C43.8176 36.6637 43.817 36.6871 43.8169 36.7024V36.7249L43.8149 36.9456L43.6255 37.0598L41.2231 38.5012L41.2222 38.5002L36.1079 41.5901L35.9087 41.7102L35.7085 41.594L13.5171 28.8645V38.6008L13.5347 38.8235C13.6502 39.9192 14.1963 40.884 14.9985 41.5032L38.4194 55.5149L38.6118 55.6292V62.7258Z',
+      'M56.4155 29.29L56.2173 29.4043L51.1548 32.3115L50.5728 32.6455L50.5649 31.9746V31.9697C50.5649 31.9665 50.564 31.9614 50.564 31.9551C50.5638 31.9423 50.5643 31.9231 50.564 31.8984C50.5633 31.8488 50.5623 31.7759 50.561 31.6826C50.5584 31.4954 50.5546 31.2256 50.5493 30.8984C50.5387 30.2441 50.5224 29.3579 50.5005 28.4297C50.4563 26.5578 50.3892 24.5594 50.2993 23.9121C49.8519 20.6907 47.9362 17.9541 45.8052 16.2559C45.3141 15.8646 43.7411 14.8391 41.6255 13.5039C39.5214 12.176 36.9065 10.558 34.355 8.99023C31.8037 7.42259 29.3169 5.9051 27.4673 4.78027C26.5425 4.21788 25.7768 3.75348 25.2427 3.42969C24.9758 3.2679 24.7669 3.14091 24.6245 3.05469C24.5533 3.01156 24.4981 2.97925 24.4614 2.95703C24.4433 2.94604 24.4297 2.93727 24.4204 2.93164C24.4158 2.92882 24.412 2.92622 24.4097 2.9248C24.4086 2.92414 24.4073 2.92417 24.4067 2.92383V2.92285H24.4058L23.8833 2.60742L24.3872 2.26172C25.9183 1.21176 27.7751 0.590824 29.771 0.59082C31.6039 0.59082 33.3209 1.11559 34.7817 2.02148L34.7837 2.02246C34.7853 2.02345 34.7883 2.02538 34.7915 2.02734C34.7979 2.03127 34.8074 2.03731 34.8198 2.04492C34.8452 2.06039 34.883 2.08326 34.9321 2.11328C35.0305 2.17339 35.1749 2.26188 35.3599 2.375C35.7299 2.60135 36.262 2.92672 36.9087 3.32324C38.202 4.11624 39.955 5.19415 41.7954 6.33105C45.4714 8.60185 49.5102 11.12 50.9116 12.0811C53.7779 14.0467 56.2059 17.7892 56.4146 21.2939L56.4155 21.3057V29.29Z'
+    ];
+
+    const DEFAULTS = {
+      iconSize: 28,
+      spacingX: 14,
+      spacingY: 14,
+      rotation: 0,
+      stagger: false,
+      gradientType: 'linear',
+      angle: 135,
+      stops: [
+        { color: '#FF8000', position: 0 },
+        { color: '#0B0F1A', position: 100 },
+      ],
+      bgColor: '#F6F7F9',
+      opacity: 100,
+    };
+    const MAX_STOPS = 12;
+    /* deep-clone helper so DEFAULTS' stops aren't shared with state */
+    const cloneDefaults = () => ({
+      ...DEFAULTS,
+      stops: DEFAULTS.stops.map(s => ({ ...s })),
+    });
+    const state = cloneDefaults();
+
+    /* color helpers */
+    function lerpHex(a, b, t) {
+      const pa = parseInt(a.slice(1), 16);
+      const pb = parseInt(b.slice(1), 16);
+      const ar = (pa >> 16) & 255, ag = (pa >> 8) & 255, ab = pa & 255;
+      const br = (pb >> 16) & 255, bg = (pb >> 8) & 255, bb = pb & 255;
+      const ch = (x, y) => Math.round(x + (y - x) * t).toString(16).padStart(2, '0');
+      return '#' + ch(ar, br) + ch(ag, bg) + ch(ab, bb);
+    }
+    function sortedStops() {
+      return [...state.stops].sort((a, b) => a.position - b.position);
+    }
+    /* "15" → "15%", "15.2608" → "15.26%" */
+    function fmtPos(p) {
+      const n = Number(p);
+      if (Number.isInteger(n)) return `${n}%`;
+      return `${(Math.round(n * 100) / 100).toString()}%`;
+    }
+    /* Resolve any CSS color string ("rebeccapurple", "rgb(...)", "#fff", "hsl(...)")
+       into an 8-bit hex code via canvas. */
+    const _colorCanvas = document.createElement('canvas').getContext('2d');
+    function cssColorToHex(input) {
+      const s = String(input).trim();
+      _colorCanvas.fillStyle = '#000';
+      try {
+        _colorCanvas.fillStyle = s;
+      } catch {
+        return '#000000';
+      }
+      const resolved = _colorCanvas.fillStyle; // canvas normalizes to #rrggbb or rgba(...)
+      if (resolved.startsWith('#')) return resolved.toLowerCase();
+      const m = resolved.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+      if (!m) return '#000000';
+      const hex = (n) => (+n).toString(16).padStart(2, '0');
+      return ('#' + hex(m[1]) + hex(m[2]) + hex(m[3])).toLowerCase();
+    }
+    /* split a string on a separator at top-level paren depth */
+    function splitTopLevel(s, sep) {
+      const out = [];
+      let depth = 0, start = 0;
+      for (let i = 0; i < s.length; i++) {
+        const c = s[i];
+        if (c === '(') depth++;
+        else if (c === ')') depth--;
+        else if (c === sep && depth === 0) {
+          out.push(s.slice(start, i));
+          start = i + 1;
+        }
+      }
+      out.push(s.slice(start));
+      return out;
+    }
+    /* parse a single "<color> [<position>%]" segment */
+    function parseStopSegment(seg) {
+      const trimmed = seg.trim();
+      if (!trimmed) return null;
+      const fnMatch = trimmed.match(/^(rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\s*\([^)]*\)/i);
+      let color, rest;
+      if (fnMatch) {
+        color = fnMatch[0];
+        rest = trimmed.slice(fnMatch[0].length).trim();
+      } else {
+        const tok = trimmed.match(/^(\S+)/);
+        if (!tok) return null;
+        color = tok[1];
+        rest = trimmed.slice(tok[1].length).trim();
+      }
+      const posMatch = rest.match(/(-?\d+(?:\.\d+)?)\s*%/);
+      const position = posMatch ? Math.round(+posMatch[1] * 100) / 100 : null;
+      return { color: cssColorToHex(color), position };
+    }
+    /* parse the angle/direction prefix of a linear-gradient header */
+    function parseLinearAngle(s) {
+      const lower = s.toLowerCase().trim();
+      const dirMap = {
+        'to top': 0, 'to right': 90, 'to bottom': 180, 'to left': 270,
+        'to top right': 45, 'to right top': 45,
+        'to bottom right': 135, 'to right bottom': 135,
+        'to bottom left': 225, 'to left bottom': 225,
+        'to top left': 315, 'to left top': 315,
+      };
+      if (dirMap[lower] !== undefined) return dirMap[lower];
+      const m = s.match(/(-?\d+(?:\.\d+)?)\s*deg/i);
+      if (m) return Math.round((((+m[1]) % 360) + 360) % 360);
+      return null;
+    }
+    function looksLikeStop(s) {
+      return /^\s*(#|rgba?\s*\(|hsla?\s*\(|hwb\s*\(|lab\s*\(|lch\s*\(|oklab\s*\(|oklch\s*\(|color\s*\(|transparent\b|currentcolor\b|[a-z]+\s*(\d+(\.\d+)?\s*%)?\s*$)/i.test(s);
+    }
+    /* parse a full CSS gradient string and return { type, angle, stops } or null */
+    function parseGradient(input) {
+      const m = input.trim().match(/^(linear|radial|conic)-gradient\s*\(([\s\S]*)\)\s*;?\s*$/i);
+      if (!m) return null;
+      const type = m[1].toLowerCase();
+      const body = m[2];
+      const parts = splitTopLevel(body, ',').map(p => p.trim()).filter(Boolean);
+      if (!parts.length) return null;
+
+      let angle = state.angle;
+      let stopParts = parts;
+      const first = parts[0];
+
+      const isHeader =
+        (type === 'linear' && (/^to\b|deg$|rad$|turn$|grad$/i.test(first.replace(/.*\s/, '')) || /^to\b|\bdeg\b|\brad\b|\bturn\b/i.test(first))) ||
+        (type === 'conic' && /^from\b|\bat\b/i.test(first)) ||
+        (type === 'radial' && /\b(circle|ellipse|at|closest|farthest|cover|contain)\b/i.test(first) && !looksLikeStop(first));
+
+      if (isHeader) {
+        if (type === 'linear') {
+          const a = parseLinearAngle(first);
+          if (a !== null) angle = a;
+        } else if (type === 'conic') {
+          const am = first.match(/from\s+(-?\d+(?:\.\d+)?)\s*deg/i);
+          if (am) angle = Math.round((((+am[1]) % 360) + 360) % 360);
+        }
+        stopParts = parts.slice(1);
+      }
+
+      const rawStops = stopParts.map(parseStopSegment).filter(Boolean);
+      if (rawStops.length < 2) return null;
+
+      /* fill missing positions: first defaults to 0, last to 100, middle stops
+         linearly interpolated across nearest specified neighbors */
+      if (rawStops[0].position === null) rawStops[0].position = 0;
+      if (rawStops[rawStops.length - 1].position === null) rawStops[rawStops.length - 1].position = 100;
+      for (let i = 1; i < rawStops.length - 1; i++) {
+        if (rawStops[i].position !== null) continue;
+        let nextSpecified = i + 1;
+        while (nextSpecified < rawStops.length && rawStops[nextSpecified].position === null) nextSpecified++;
+        const prevPos = rawStops[i - 1].position;
+        const nextPos = rawStops[nextSpecified].position;
+        const gap = nextSpecified - (i - 1);
+        rawStops[i].position = Math.round((prevPos + ((nextPos - prevPos) * (1 / gap))) * 100) / 100;
+      }
+
+      return {
+        type,
+        angle,
+        stops: rawStops.slice(0, MAX_STOPS),
+      };
+    }
+
+    /* Build a single SVG that, when used as a CSS mask, tiles the logomark.
+       The SVG itself is one tile; CSS handles the repeat. With negative
+       spacing the icon is wider/taller than the cell, so we emit extra
+       copies whose centers fall outside the tile — the SVG clips them to
+       its bounds and neighboring tiles continue the same pattern, giving
+       correct overlap. */
+    function buildMaskSVG(s) {
+      const cellW = Math.max(1, s.iconSize + s.spacingX);
+      const cellH = Math.max(1, s.iconSize + s.spacingY);
+      const tileW = cellW;
+      const tileH = s.stagger ? cellH * 2 : cellH;
+      const half = s.iconSize / 2;
+      const scale = s.iconSize / 64;
+
+      /* +1 padding to be safe when rotation pushes corners outward */
+      const extraX = Math.ceil(half / cellW) + 1;
+      const extraY = Math.ceil(half / cellH) + 1;
+
+      const iconAt = (cx, cy) => {
+        const transform =
+          `translate(${cx} ${cy}) ` +
+          `rotate(${s.rotation}) ` +
+          `translate(${-half} ${-half}) ` +
+          `scale(${scale})`;
+        return `<g transform="${transform}">` +
+          ICON_PATHS.map(d => `<path d="${d}" fill="#fff"/>`).join('') +
+          `</g>`;
+      };
+
+      const rowsInTile = s.stagger ? 2 : 1;
+      let icons = '';
+      for (let rowIdx = -extraY; rowIdx < rowsInTile + extraY; rowIdx++) {
+        const cy = (rowIdx + 0.5) * cellH;
+        /* even rows (incl. all rows when stagger off): centered at +cellW/2.
+           odd rows when stagger on: centered at integer multiples of cellW
+           (i.e. shifted by cellW/2 relative to even rows). */
+        const isOddRow = ((rowIdx % 2) + 2) % 2 === 1;
+        const xOffset = (s.stagger && isOddRow) ? 0 : cellW / 2;
+        for (let colIdx = -extraX; colIdx <= extraX; colIdx++) {
+          icons += iconAt(colIdx * cellW + xOffset, cy);
+        }
+      }
+
+      const svg =
+        `<svg xmlns="http://www.w3.org/2000/svg" width="${tileW}" height="${tileH}" viewBox="0 0 ${tileW} ${tileH}">` +
+        icons +
+        `</svg>`;
+      return { svg, tileW, tileH };
+    }
+
+    function svgToDataURI(svg) {
+      /* Encode both quote types so the URI is safe to embed inside an
+         HTML style attribute (used by the export's foreignObject). */
+      const encoded = svg
+        .replace(/"/g, '%22')
+        .replace(/'/g, '%27')
+        .replace(/</g, '%3C')
+        .replace(/>/g, '%3E')
+        .replace(/#/g, '%23')
+        .replace(/\s+/g, ' ');
+      return `url("data:image/svg+xml;utf8,${encoded}")`;
+    }
+
+    function buildGradient(s) {
+      const stopsStr = sortedStops()
+        .map(stop => `${stop.color} ${stop.position}%`)
+        .join(', ');
+      if (s.gradientType === 'linear') {
+        return `linear-gradient(${s.angle}deg, ${stopsStr})`;
+      }
+      if (s.gradientType === 'conic') {
+        return `conic-gradient(from ${s.angle}deg at center, ${stopsStr})`;
+      }
+      return `radial-gradient(circle at center, ${stopsStr})`;
+    }
+    /* a "preview" gradient that always reads as a left-to-right bar
+       regardless of the canvas gradient type, so the user sees the
+       color sequence cleanly */
+    function buildPreviewGradient() {
+      const stopsStr = sortedStops()
+        .map(stop => `${stop.color} ${stop.position}%`)
+        .join(', ');
+      return `linear-gradient(90deg, ${stopsStr})`;
+    }
+
+    function renderStops() {
+      const container = document.getElementById('stops');
+      container.innerHTML = '';
+      const removable = state.stops.length > 2;
+      state.stops.forEach((stop, idx) => {
+        const row = document.createElement('div');
+        row.className = 'stop';
+        row.innerHTML =
+          `<span class="color-pick">
+             <input type="color" data-idx="${idx}" data-field="color" value="${stop.color}" />
+           </span>
+           <input type="range" min="0" max="100" step="0.01" value="${stop.position}" data-idx="${idx}" data-field="position" />
+           <span class="pos">${fmtPos(stop.position)}</span>
+           <button class="stop-remove" data-idx="${idx}" ${removable ? '' : 'disabled'} aria-label="Remove stop">&times;</button>`;
+        container.appendChild(row);
+      });
+
+      container.querySelectorAll('input[type=color]').forEach(input => {
+        input.addEventListener('input', e => {
+          const i = +e.target.dataset.idx;
+          state.stops[i].color = e.target.value;
+          render();
+        });
+      });
+      container.querySelectorAll('input[type=range]').forEach(input => {
+        input.addEventListener('input', e => {
+          const i = +e.target.dataset.idx;
+          state.stops[i].position = Math.round(+e.target.value * 100) / 100;
+          render();
+        });
+      });
+      container.querySelectorAll('.stop-remove').forEach(btn => {
+        btn.addEventListener('click', e => {
+          const i = +e.currentTarget.dataset.idx;
+          if (state.stops.length <= 2) return;
+          state.stops.splice(i, 1);
+          render();
+        });
+      });
+
+      document.getElementById('addStop').toggleAttribute('disabled', state.stops.length >= MAX_STOPS);
+    }
+
+    function render() {
+      const { svg, tileW, tileH } = buildMaskSVG(state);
+      const dataURI = svgToDataURI(svg);
+      const bg = document.getElementById('bg');
+      bg.style.background = buildGradient(state);
+      bg.style.maskImage = dataURI;
+      bg.style.webkitMaskImage = dataURI;
+      bg.style.maskSize = `${tileW}px ${tileH}px`;
+      bg.style.webkitMaskSize = `${tileW}px ${tileH}px`;
+      bg.style.opacity = state.opacity / 100;
+
+      document.getElementById('canvas').style.background = state.bgColor;
+      document.getElementById('gradientPreview').style.background = buildPreviewGradient();
+
+      // labels
+      document.getElementById('v-iconSize').textContent = `${state.iconSize}px`;
+      document.getElementById('v-spacingX').textContent = `${state.spacingX}px`;
+      document.getElementById('v-spacingY').textContent = `${state.spacingY}px`;
+      document.getElementById('v-rotation').textContent = `${state.rotation}°`;
+      document.getElementById('v-angle').textContent = `${state.angle}°`;
+      document.getElementById('v-opacity').textContent = `${state.opacity}%`;
+      document.getElementById('hex-bgColor').textContent = state.bgColor.toUpperCase();
+
+      // angle is meaningful for linear and conic, not radial
+      const angleRow = document.getElementById('angleRow');
+      angleRow.classList.toggle('disabled', state.gradientType === 'radial');
+
+      renderStops();
+    }
+
+    function syncInputsToState() {
+      document.getElementById('iconSize').value = state.iconSize;
+      document.getElementById('spacingX').value = state.spacingX;
+      document.getElementById('spacingY').value = state.spacingY;
+      document.getElementById('rotation').value = state.rotation;
+      document.getElementById('stagger').checked = state.stagger;
+      document.getElementById('angle').value = state.angle;
+      document.getElementById('bgColor').value = state.bgColor;
+      document.getElementById('opacity').value = state.opacity;
+      document.querySelectorAll('#gradientType button').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.value === state.gradientType);
+      });
+    }
+
+    /* wire up controls */
+    function wire(id, key, parse = v => +v) {
+      document.getElementById(id).addEventListener('input', e => {
+        state[key] = parse(e.target.value);
+        render();
+      });
+    }
+    wire('iconSize', 'iconSize');
+    wire('spacingX', 'spacingX');
+    wire('spacingY', 'spacingY');
+    wire('rotation', 'rotation');
+    wire('angle', 'angle');
+    wire('opacity', 'opacity');
+    wire('bgColor', 'bgColor', v => v);
+
+    document.getElementById('stagger').addEventListener('change', e => {
+      state.stagger = e.target.checked;
+      render();
+    });
+
+    document.querySelectorAll('#gradientType button').forEach(btn => {
+      btn.addEventListener('click', () => {
+        state.gradientType = btn.dataset.value;
+        document.querySelectorAll('#gradientType button').forEach(b =>
+          b.classList.toggle('active', b === btn)
+        );
+        render();
+      });
+    });
+
+    /* add a stop in the largest gap between existing stops, with a
+       color interpolated from its neighbors. */
+    document.getElementById('addStop').addEventListener('click', () => {
+      if (state.stops.length >= MAX_STOPS) return;
+      const sorted = sortedStops();
+      let bestGap = -1, bestPos = 50, bestColor = '#888888';
+      for (let i = 0; i < sorted.length - 1; i++) {
+        const a = sorted[i], b = sorted[i + 1];
+        const gap = b.position - a.position;
+        if (gap > bestGap) {
+          bestGap = gap;
+          bestPos = Math.round(a.position + gap / 2);
+          bestColor = lerpHex(a.color, b.color, 0.5);
+        }
+      }
+      state.stops.push({ color: bestColor, position: bestPos });
+      render();
+    });
+
+    document.getElementById('reset').addEventListener('click', () => {
+      Object.assign(state, cloneDefaults());
+      syncInputsToState();
+      render();
+    });
+
+    /* PNG / WebP export.
+       Pure canvas pipeline — no foreignObject:
+         1. Build the gradient natively via ctx.createLinearGradient /
+            createRadialGradient / createConicGradient.
+         2. Load the mask SVG (just paths, no external refs) as an Image
+            and use it as a repeating canvas pattern.
+         3. globalCompositeOperation 'destination-in' keeps the gradient
+            only where the mask is opaque.
+         4. Composite onto a bg-colored canvas with the icon opacity. */
+    function loadImage(src) {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error('Failed to load image'));
+        img.src = src;
+      });
+    }
+
+    function buildCanvasGradient(ctx, w, h) {
+      const stops = sortedStops();
+      let g;
+      if (state.gradientType === 'linear') {
+        /* CSS linear-gradient angle: 0deg = up, clockwise. We pick gradient
+           line endpoints on the bounding box such that the "0%" stop is at
+           the start of the line and "100%" is at the end. */
+        const theta = state.angle * Math.PI / 180;
+        const sin = Math.sin(theta), cos = Math.cos(theta);
+        const length = Math.abs(w * sin) + Math.abs(h * cos);
+        const cx = w / 2, cy = h / 2;
+        const dx = sin * length / 2, dy = -cos * length / 2;
+        g = ctx.createLinearGradient(cx - dx, cy - dy, cx + dx, cy + dy);
+      } else if (state.gradientType === 'radial') {
+        const cx = w / 2, cy = h / 2;
+        /* CSS default for radial-gradient(circle at center) is farthest-corner */
+        const r = Math.sqrt(cx * cx + cy * cy);
+        g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+      } else {
+        /* Canvas conic starts from positive x-axis (right); CSS conic from
+           top. Subtract 90° to match. */
+        const cx = w / 2, cy = h / 2;
+        const startAngle = (state.angle - 90) * Math.PI / 180;
+        g = ctx.createConicGradient(startAngle, cx, cy);
+      }
+      for (const stop of stops) {
+        const pos = Math.max(0, Math.min(1, stop.position / 100));
+        g.addColorStop(pos, stop.color);
+      }
+      return g;
+    }
+
+    async function exportImage(format) {
+      const btn = format === 'webp'
+        ? document.getElementById('exportWebp')
+        : document.getElementById('exportPng');
+      const original = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Rendering…';
+
+      try {
+        const canvasEl = document.getElementById('canvas');
+        const rect = canvasEl.getBoundingClientRect();
+        const w = Math.round(rect.width);
+        const h = Math.round(rect.height);
+        const scale = 2;
+        const W = w * scale;
+        const H = h * scale;
+
+        const { svg: maskSvg, tileW, tileH } = buildMaskSVG(state);
+
+        /* Load the mask SVG via a Blob URL — avoids any data-URI quote/encoding issues */
+        const maskBlob = new Blob([maskSvg], { type: 'image/svg+xml;charset=utf-8' });
+        const maskUrl = URL.createObjectURL(maskBlob);
+        let maskImg;
+        try {
+          maskImg = await loadImage(maskUrl);
+        } finally {
+          URL.revokeObjectURL(maskUrl);
+        }
+
+        /* 1. Final canvas: background color */
+        const finalCanvas = document.createElement('canvas');
+        finalCanvas.width = W;
+        finalCanvas.height = H;
+        const finalCtx = finalCanvas.getContext('2d');
+        finalCtx.fillStyle = state.bgColor;
+        finalCtx.fillRect(0, 0, W, H);
+
+        /* 2. Gradient layer at full export size */
+        const gradCanvas = document.createElement('canvas');
+        gradCanvas.width = W;
+        gradCanvas.height = H;
+        const gradCtx = gradCanvas.getContext('2d');
+        gradCtx.fillStyle = buildCanvasGradient(gradCtx, W, H);
+        gradCtx.fillRect(0, 0, W, H);
+
+        /* 3. Mask via repeating pattern — use setTransform to scale tiles to
+              (tileW*scale) × (tileH*scale) so visual tile size matches the
+              live preview after the 2x upscale. */
+        const pattern = gradCtx.createPattern(maskImg, 'repeat');
+        if (pattern && pattern.setTransform) {
+          pattern.setTransform(new DOMMatrix().scale(scale, scale));
+        } else if (pattern) {
+          /* fallback for environments lacking setTransform: pre-rasterize the
+             tile to a scaled canvas and use that as the pattern source */
+          const tCanvas = document.createElement('canvas');
+          tCanvas.width = tileW * scale;
+          tCanvas.height = tileH * scale;
+          const tCtx = tCanvas.getContext('2d');
+          tCtx.drawImage(maskImg, 0, 0, tCanvas.width, tCanvas.height);
+          gradCtx.fillStyle = gradCtx.createPattern(tCanvas, 'repeat');
+        }
+
+        /* 4. Punch the mask: keep gradient pixels only where the mask is opaque */
+        gradCtx.globalCompositeOperation = 'destination-in';
+        if (pattern && pattern.setTransform) {
+          gradCtx.fillStyle = pattern;
+        }
+        gradCtx.fillRect(0, 0, W, H);
+
+        /* 5. Composite the masked gradient over the bg with the icon opacity */
+        finalCtx.globalAlpha = Math.max(0, Math.min(1, state.opacity / 100));
+        finalCtx.drawImage(gradCanvas, 0, 0);
+        finalCtx.globalAlpha = 1;
+
+        /* 6. Encode and download */
+        const mime = format === 'webp' ? 'image/webp' : 'image/png';
+        const quality = format === 'webp' ? 0.95 : undefined;
+        const blob = await new Promise((resolve, reject) => {
+          finalCanvas.toBlob(b => b ? resolve(b) : reject(new Error('toBlob returned null')), mime, quality);
+        });
+
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `logomark-bg-${Date.now()}.${format}`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(a.href), 1500);
+
+        btn.textContent = 'Saved';
+        setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 1200);
+      } catch (err) {
+        console.error('export failed', err);
+        btn.textContent = 'Failed';
+        setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 1500);
+      }
+    }
+
+    document.getElementById('exportPng').addEventListener('click', () => exportImage('png'));
+    document.getElementById('exportWebp').addEventListener('click', () => exportImage('webp'));
+
+    /* paste-CSS dialog */
+    const pasteOverlay = document.getElementById('pasteOverlay');
+    const pasteInput = document.getElementById('pasteInput');
+    const pasteErr = document.getElementById('pasteErr');
+    function openPaste() {
+      pasteOverlay.classList.add('open');
+      pasteErr.style.display = 'none';
+      pasteInput.value = buildGradient(state);
+      setTimeout(() => {
+        pasteInput.focus();
+        pasteInput.select();
+      }, 0);
+    }
+    function closePaste() {
+      pasteOverlay.classList.remove('open');
+    }
+    function applyPaste() {
+      const parsed = parseGradient(pasteInput.value);
+      if (!parsed) {
+        pasteErr.textContent = "Couldn't parse that. Make sure it's a complete linear/radial/conic-gradient(...) expression.";
+        pasteErr.style.display = 'block';
+        return;
+      }
+      state.gradientType = parsed.type;
+      state.angle = parsed.angle;
+      state.stops = parsed.stops;
+      syncInputsToState();
+      render();
+      closePaste();
+    }
+    document.getElementById('openPaste').addEventListener('click', openPaste);
+    document.getElementById('pasteCancel').addEventListener('click', closePaste);
+    document.getElementById('pasteApply').addEventListener('click', applyPaste);
+    pasteOverlay.addEventListener('click', e => {
+      if (e.target === pasteOverlay) closePaste();
+    });
+    document.addEventListener('keydown', e => {
+      if (!pasteOverlay.classList.contains('open')) return;
+      if (e.key === 'Escape') closePaste();
+      else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) applyPaste();
+    });
+
+    document.getElementById('copy').addEventListener('click', async () => {
+      const { svg, tileW, tileH } = buildMaskSVG(state);
+      const dataURI = svgToDataURI(svg);
+      const css =
+`/* logomark background */
+.logomark-bg {
+  position: relative;
+  background: ${state.bgColor};
+}
+.logomark-bg::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: ${buildGradient(state)};
+  mask-image: ${dataURI};
+  -webkit-mask-image: ${dataURI};
+  mask-repeat: repeat;
+  -webkit-mask-repeat: repeat;
+  mask-size: ${tileW}px ${tileH}px;
+  -webkit-mask-size: ${tileW}px ${tileH}px;
+  opacity: ${(state.opacity / 100).toFixed(2)};
+  pointer-events: none;
+}`;
+      try {
+        await navigator.clipboard.writeText(css);
+        const btn = document.getElementById('copy');
+        btn.textContent = 'Copied';
+        btn.classList.add('copied');
+        setTimeout(() => {
+          btn.textContent = 'Copy CSS';
+          btn.classList.remove('copied');
+        }, 1400);
+      } catch (err) {
+        console.error('clipboard write failed', err);
+      }
+    });
+
+    syncInputsToState();
+    render();
+  </script>
+</body>
+</html>

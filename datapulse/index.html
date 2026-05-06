@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DataPulse</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #02050A;
+        }
+        canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+        }
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #ffffff;
+            font-family: monospace;
+            font-size: 12px;
+            pointer-events: none;
+            transition: opacity 0.5s ease;
+        }
+    </style>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+                "lil-gui": "https://unpkg.com/lil-gui@0.19.1/dist/lil-gui.esm.js"
+            }
+        }
+    </script>
+</head>
+<body>
+    <div id="loading">Initializing Neural Pathways...</div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+        import GUI from 'lil-gui';
+
+        // --- Configuration & Parameters ---
+        const params = {
+            cameraSpeed: 0.1,
+            flowSpeed: 85.0,
+            maxFibers: 150,
+            pointsPerFiber: 450,
+
+            nodeDistance: 511.0,
+            pinchSharpness: 3.6,
+            maxSpread: 100.0,
+            minSpread: 0.0,
+            structuralNoise: 2.5,
+
+            particleSpeed: 0.25,
+            particleSpawnRate: 1,
+
+            bloomStrength: 1.0,
+            bloomRadius: 0.22,
+            bloomThreshold: 0.1,
+            lineColor: '#36547d',
+            lineOpacity: 0.4,
+
+            backgroundColor: '#000000',
+            particleColor: '#8fb4ff'
+        };
+
+        const sharedUniforms = {
+            uTime: { value: 0 },
+            uCameraX: { value: 0 }
+        };
+
+        // --- Core Scene Setup ---
+        const canvas = document.createElement('canvas');
+        document.body.appendChild(canvas);
+
+        const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: "high-performance" });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x000000, 1);
+
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x000000, 0.004);
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 1, 1000);
+        camera.position.set(-60, 0, 140);
+        camera.lookAt(40, 0, 0);
+
+        // --- Post-Processing (Bloom) ---
+        const composer = new EffectComposer(renderer);
+        const renderPass = new RenderPass(scene, camera);
+        composer.addPass(renderPass);
+
+        const bloomPass = new UnrealBloomPass(
+            new THREE.Vector2(window.innerWidth, window.innerHeight),
+            params.bloomStrength,
+            params.bloomRadius,
+            params.bloomThreshold
+        );
+        composer.addPass(bloomPass);
+
+        // --- Custom Shader Chunks for Fading ---
+        const fadeVaryingChunk = `varying float vRelativeX;`;
+        const fadeVertexChunk = `vRelativeX = position.x - uCameraX;`;
+        const fadeFragmentChunk = `
+            float fade = smoothstep(-30.0, 50.0, vRelativeX) * smoothstep(350.0, 150.0, vRelativeX);
+            gl_FragColor.a *= fade;
+        `;
+
+        // --- Fiber (Line) Material ---
+        const lineMaterial = new THREE.LineBasicMaterial({
+            color: new THREE.Color(params.lineColor),
+            transparent: true,
+            opacity: params.lineOpacity,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false
+        });
+
+        lineMaterial.onBeforeCompile = (shader) => {
+            shader.uniforms.uCameraX = sharedUniforms.uCameraX;
+            shader.vertexShader = `
+                uniform float uCameraX;
+                ${fadeVaryingChunk}
+                ${shader.vertexShader}
+            `.replace(
+                `#include <begin_vertex>`,
+                `
+                #include <begin_vertex>
+                ${fadeVertexChunk}
+                `
+            );
+            shader.fragmentShader = `
+                ${fadeVaryingChunk}
+                ${shader.fragmentShader}
+            `.replace(
+                `#include <dithering_fragment>`,
+                `
+                #include <dithering_fragment>
+                ${fadeFragmentChunk}
+                `
+            );
+        };
+
+        // --- Classes ---
+        class Fiber {
+            constructor() {
+                this.maxPoints = params.pointsPerFiber;
+                this.positions = new Float32Array(this.maxPoints * 3);
+
+                const angle = Math.random() * Math.PI * 2;
+                const radius = Math.random();
+
+                this.baseY = Math.sin(angle) * radius;
+                this.baseZ = Math.cos(angle) * radius;
+                this.noiseSeed = Math.random() * 100.0;
+
+                this.geometry = new THREE.BufferGeometry();
+                this.geometry.setAttribute('position', new THREE.BufferAttribute(this.positions, 3));
+                this.geometry.attributes.position.setUsage(THREE.DynamicDrawUsage);
+
+                this.line = new THREE.Line(this.geometry, lineMaterial);
+                this.line.frustumCulled = false;
+                scene.add(this.line);
+            }
+
+            update(time, cameraX) {
+                const length = 1500.0;
+                const startX = cameraX - 100.0;
+                const step = length / (this.maxPoints - 1);
+
+                for (let i = 0; i < this.maxPoints; i++) {
+                    let x = startX + i * step;
+
+                    let phase = (x - time * params.flowSpeed) / params.nodeDistance;
+                    phase = phase - Math.floor(phase);
+
+                    let smoothWave = Math.cos(phase * Math.PI * 2) * 0.5 + 0.5;
+                    let pinchFactor = Math.pow(smoothWave, params.pinchSharpness);
+                    let currentSpread = params.minSpread + (params.maxSpread - params.minSpread) * pinchFactor;
+
+                    const noiseY = Math.sin(x * 0.015 + this.noiseSeed + time * 1.2) * params.structuralNoise * pinchFactor;
+                    const noiseZ = Math.cos(x * 0.018 - this.noiseSeed + time * 1.0) * params.structuralNoise * pinchFactor;
+
+                    this.positions[i * 3]     = x;
+                    this.positions[i * 3 + 1] = this.baseY * currentSpread + noiseY;
+                    this.positions[i * 3 + 2] = this.baseZ * currentSpread + noiseZ;
+                }
+
+                this.geometry.attributes.position.needsUpdate = true;
+                this.geometry.setDrawRange(0, this.maxPoints);
+            }
+        }
+
+        // --- Particle System ---
+        class ParticleSystem {
+            constructor(maxParticles = 5000) {
+                this.maxParticles = maxParticles;
+                this.particles = [];
+
+                this.geometry = new THREE.BufferGeometry();
+                this.positions = new Float32Array(this.maxParticles * 3);
+                this.alphas = new Float32Array(this.maxParticles);
+
+                this.geometry.setAttribute('position', new THREE.BufferAttribute(this.positions, 3));
+                this.geometry.setAttribute('alpha', new THREE.BufferAttribute(this.alphas, 1));
+
+                const material = new THREE.ShaderMaterial({
+                    uniforms: {
+                        uCameraX: sharedUniforms.uCameraX,
+                        uParticleColor: { value: new THREE.Color(params.particleColor) }
+                    },
+                    vertexShader: `
+                        uniform float uCameraX;
+                        attribute float alpha;
+                        varying float vAlpha;
+                        varying float vRelativeX;
+
+                        void main() {
+                            vAlpha = alpha;
+                            vRelativeX = position.x - uCameraX;
+                            vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                            gl_PointSize = 2.0;
+                            gl_Position = projectionMatrix * mvPosition;
+                        }
+                    `,
+                    fragmentShader: `
+                        uniform vec3 uParticleColor;
+                        varying float vAlpha;
+                        varying float vRelativeX;
+
+                        void main() {
+                            if (vAlpha < 0.5) discard;
+                            float fade = smoothstep(-30.0, 50.0, vRelativeX) * smoothstep(350.0, 150.0, vRelativeX);
+                            gl_FragColor = vec4(uParticleColor, fade);
+                        }
+                    `,
+                    transparent: true,
+                    depthWrite: false,
+                    blending: THREE.AdditiveBlending
+                });
+
+                this.material = material;
+                this.pointsMesh = new THREE.Points(this.geometry, material);
+                this.pointsMesh.frustumCulled = false;
+                scene.add(this.pointsMesh);
+
+                for (let i = 0; i < this.maxParticles; i++) {
+                    this.particles.push({ id: i, active: false, fiber: null, progress: 0, speed: 0 });
+                }
+            }
+
+            spawn(initialProgress = 0) {
+                if (fibers.length === 0) return;
+                let p = this.particles.find(p => !p.active);
+                if (!p) return;
+                const fiber = fibers[Math.floor(Math.random() * fibers.length)];
+                p.active = true;
+                p.fiber = fiber;
+                p.progress = initialProgress;
+                p.speed = params.particleSpeed * (Math.random() * 0.4 + 0.8);
+            }
+
+            killParticle(p) {
+                p.active = false;
+                p.fiber = null;
+                this.alphas[p.id] = 0.0;
+            }
+
+            update() {
+                let attributesUpdated = false;
+
+                for (let i = 0; i < this.maxParticles; i++) {
+                    const p = this.particles[i];
+
+                    if (!p.active) {
+                        this.alphas[i] = 0.0;
+                        continue;
+                    }
+
+                    p.progress += p.speed;
+
+                    const fiber = p.fiber;
+                    if (p.progress >= fiber.maxPoints - 1) {
+                        this.killParticle(p);
+                        attributesUpdated = true;
+                        continue;
+                    }
+
+                    const i0 = Math.floor(p.progress);
+                    const i1 = i0 + 1;
+                    const t = p.progress - i0;
+
+                    const x0 = fiber.positions[i0 * 3];
+                    const y0 = fiber.positions[i0 * 3 + 1];
+                    const z0 = fiber.positions[i0 * 3 + 2];
+
+                    const x1 = fiber.positions[i1 * 3];
+                    const y1 = fiber.positions[i1 * 3 + 1];
+                    const z1 = fiber.positions[i1 * 3 + 2];
+
+                    this.positions[i * 3]     = x0 + (x1 - x0) * t;
+                    this.positions[i * 3 + 1] = y0 + (y1 - y0) * t;
+                    this.positions[i * 3 + 2] = z0 + (z1 - z0) * t;
+
+                    this.alphas[i] = 1.0;
+                    attributesUpdated = true;
+                }
+
+                if (attributesUpdated) {
+                    this.geometry.attributes.position.needsUpdate = true;
+                    this.geometry.attributes.alpha.needsUpdate = true;
+                }
+            }
+        }
+
+        // --- Initialization ---
+        let fibers = [];
+        let particleSystem;
+
+        function init() {
+            document.getElementById('loading').style.opacity = 0;
+
+            for (let i = 0; i < params.maxFibers; i++) {
+                fibers.push(new Fiber());
+            }
+
+            fibers.forEach(f => f.update(0, camera.position.x));
+
+            particleSystem = new ParticleSystem(5000);
+
+            const initialParticleCount = 1500;
+            for (let i = 0; i < initialParticleCount; i++) {
+                const randomProgress = Math.random() * (params.pointsPerFiber - 1);
+                particleSystem.spawn(randomProgress);
+            }
+            particleSystem.update();
+
+            // --- lil-gui Setup ---
+            const gui = new GUI({ title: 'Settings' });
+            gui.close();
+
+            const folderColors = gui.addFolder('Colors');
+            folderColors.addColor(params, 'backgroundColor').name('Background').onChange(c => {
+                renderer.setClearColor(c);
+                scene.fog.color.set(c);
+            });
+            folderColors.addColor(params, 'lineColor').name('Lines').onChange(c => {
+                lineMaterial.color.set(c);
+            });
+            folderColors.addColor(params, 'particleColor').name('Particles').onChange(c => {
+                particleSystem.material.uniforms.uParticleColor.value.set(c);
+            });
+
+            const folderStruct = gui.addFolder('Network Architecture');
+            folderStruct.add(params, 'nodeDistance', 100, 800, 1).name('Node Distance');
+            folderStruct.add(params, 'pinchSharpness', 1.0, 8.0, 0.1).name('Pinch Sharpness');
+            folderStruct.add(params, 'maxSpread', 10.0, 150.0, 1.0).name('Bundle Spread');
+            folderStruct.add(params, 'minSpread', 0.0, 10.0, 0.1).name('Pinch Width');
+            folderStruct.add(params, 'structuralNoise', 0.0, 10.0, 0.1).name('Organic Noise');
+
+            const folderSim = gui.addFolder('Simulation Dynamics');
+            folderSim.add(params, 'cameraSpeed', 0.0, 5.0, 0.01).name('Camera Panning');
+            folderSim.add(params, 'flowSpeed', -200.0, 300.0, 1.0).name('Structural Flow Right');
+            folderSim.add(params, 'particleSpeed', 0.0, 3.0, 0.01).name('Data Flow Speed');
+            folderSim.add(params, 'particleSpawnRate', 0, 20, 1).name('Spawn Density');
+
+            const folderRender = gui.addFolder('Post-Processing');
+            folderRender.add(bloomPass, 'strength', 0.0, 3.0, 0.1).name('Bloom Strength');
+            folderRender.add(bloomPass, 'radius', 0.0, 1.0, 0.01).name('Bloom Radius');
+
+            window.addEventListener('resize', onWindowResize);
+            animate();
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // --- Main Loop ---
+        const clock = new THREE.Clock();
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const time = clock.getElapsedTime();
+            sharedUniforms.uTime.value = time;
+
+            camera.position.x += params.cameraSpeed;
+            sharedUniforms.uCameraX.value = camera.position.x;
+
+            camera.position.y = Math.sin(time * 0.2) * 8;
+            camera.position.z = 140 + Math.cos(time * 0.15) * 10;
+            camera.lookAt(camera.position.x + 100, 0, 0);
+
+            fibers.forEach(f => f.update(time, camera.position.x));
+
+            for (let i = 0; i < params.particleSpawnRate; i++) {
+                particleSystem.spawn(0);
+            }
+            particleSystem.update();
+
+            composer.render();
+        }
+
+        window.onload = init;
+    </script>
+</body>
+</html>
