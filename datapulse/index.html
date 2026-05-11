@@ -44,6 +44,7 @@ const globalParams = {
     particleColor:     '#FF8000',
     particleSpeed:     0.20,
     particleSpawnRate: 1,
+    glow:              true,
 };
 
 // ─────────────────────────────────────────────
@@ -67,6 +68,7 @@ function defaultNet(isA) {
         lineThickness:   0.018,   // world-space full width (~1.5 px default)
         fiberCount:      80,
         mode3D:          true,
+        cloth:           false,
     };
 }
 
@@ -190,6 +192,56 @@ class Fiber {
 }
 
 // ─────────────────────────────────────────────
+// ClothPanel
+// Connects two adjacent fibers as a triangle strip
+// for a cloth-in-the-wind look. Reads fiber.positions.
+// ─────────────────────────────────────────────
+class ClothPanel {
+    constructor(material, fiberA, fiberB) {
+        this.fiberA = fiberA;
+        this.fiberB = fiberB;
+        this.maxPoints = POINTS_PER_FIBER;
+        this.positions = new Float32Array(this.maxPoints * 2 * 3);
+
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position',
+            new THREE.BufferAttribute(this.positions, 3));
+        geo.attributes.position.setUsage(THREE.DynamicDrawUsage);
+
+        const idx = new Uint32Array((this.maxPoints - 1) * 6);
+        for (let i = 0; i < this.maxPoints - 1; i++) {
+            const a = i*2, b = i*2+1, c = (i+1)*2, d = (i+1)*2+1;
+            idx[i*6]   = a; idx[i*6+1] = b; idx[i*6+2] = c;
+            idx[i*6+3] = b; idx[i*6+4] = d; idx[i*6+5] = c;
+        }
+        geo.setIndex(new THREE.BufferAttribute(idx, 1));
+
+        this.geometry = geo;
+        this.mesh = new THREE.Mesh(geo, material);
+        this.mesh.frustumCulled = false;
+        this.mesh.visible = false;
+        scene.add(this.mesh);
+    }
+
+    update() {
+        const a = this.fiberA.positions;
+        const b = this.fiberB.positions;
+        const r = this.positions;
+        for (let i = 0; i < this.maxPoints; i++) {
+            const i3 = i * 3, i6 = i * 6;
+            r[i6]   = a[i3];   r[i6+1] = a[i3+1]; r[i6+2] = a[i3+2];
+            r[i6+3] = b[i3];   r[i6+4] = b[i3+1]; r[i6+5] = b[i3+2];
+        }
+        this.geometry.attributes.position.needsUpdate = true;
+    }
+
+    dispose() {
+        scene.remove(this.mesh);
+        this.geometry.dispose();
+    }
+}
+
+// ─────────────────────────────────────────────
 // ParticleSystem  (unchanged — reads fiber.positions)
 // ─────────────────────────────────────────────
 class ParticleSystem {
@@ -223,7 +275,7 @@ class ParticleSystem {
                     gl_FragColor = vec4(uColor, vAlpha);
                 }`,
             transparent: true, depthWrite: false,
-            blending: THREE.AdditiveBlending,
+            blending: globalParams.glow ? THREE.AdditiveBlending : THREE.NormalBlending,
         });
 
         this.mesh = new THREE.Points(geo, this.material);
@@ -292,7 +344,7 @@ class Network {
             color:       new THREE.Color(params.lineColor),
             transparent: true,
             opacity:     params.lineOpacity,
-            blending:    THREE.AdditiveBlending,
+            blending:    globalParams.glow ? THREE.AdditiveBlending : THREE.NormalBlending,
             depthWrite:  false,
             side:        THREE.DoubleSide,
         });
@@ -300,6 +352,14 @@ class Network {
         // Pre-allocate full pool
         this.allFibers = Array.from({ length: MAX_FIBERS },
             () => new Fiber(this.lineMaterial));
+
+        // One cloth panel per adjacent fiber pair (0&1, 2&3, …)
+        this.allPanels = Array.from({ length: Math.floor(MAX_FIBERS / 2) },
+            (_, i) => new ClothPanel(
+                this.lineMaterial,
+                this.allFibers[i * 2],
+                this.allFibers[i * 2 + 1],
+            ));
 
         this._applyCount();
 
@@ -317,12 +377,27 @@ class Network {
         this.allFibers.forEach((f, i) => { f.mesh.visible = i < n; });
         this.activeFibers = this.allFibers.slice(0, n);
         if (this.particles) this.particles.fibers = this.activeFibers;
+        this._applyCloth();
+    }
+
+    // Show panels only when cloth mode is on AND both paired fibers are active
+    _applyCloth() {
+        const n    = Math.round(this.params.fiberCount);
+        const cloth = !!this.params.cloth;
+        this.allPanels.forEach((panel, i) => {
+            panel.mesh.visible = cloth && (i * 2 + 1) < n;
+        });
     }
 
     update(time) {
         const n = Math.round(this.params.fiberCount);
         for (let i = 0; i < n; i++)
             this.allFibers[i].update(time, this.params);
+
+        if (this.params.cloth) {
+            const panels = Math.floor(n / 2);
+            for (let i = 0; i < panels; i++) this.allPanels[i].update();
+        }
 
         for (let i = 0; i < globalParams.particleSpawnRate; i++)
             this.particles.spawn(0);
@@ -331,6 +406,7 @@ class Network {
 
     dispose() {
         this.allFibers.forEach(f => f.dispose());
+        this.allPanels.forEach(p => p.dispose());
         this.particles.dispose();
         this.lineMaterial.dispose();
     }
@@ -351,6 +427,96 @@ window.onload = () => {
     const gui = new lil.GUI({ title: 'DataPulse' });
     gui.close();
 
+    // ───────── Settings copy / paste ─────────
+    function applyAllParams() {
+        renderer.setClearColor(globalParams.backgroundColor);
+        const mode = globalParams.glow ? THREE.AdditiveBlending : THREE.NormalBlending;
+        [netA, netB].forEach(net => {
+            const p = net.params;
+            net.lineMaterial.color.set(p.lineColor);
+            net.lineMaterial.opacity = p.lineOpacity;
+            net.lineMaterial.blending = mode;
+            net.lineMaterial.needsUpdate = true;
+            net.particles.material.uniforms.uColor.value.set(globalParams.particleColor);
+            net.particles.material.blending = mode;
+            net.particles.material.needsUpdate = true;
+            net._applyCount(); // also refreshes cloth
+        });
+        gui.controllersRecursive().forEach(c => c.updateDisplay());
+    }
+
+    async function copySettings() {
+        const text = JSON.stringify(
+            { global: globalParams, netA: paramsA, netB: paramsB }, null, 2);
+        try {
+            await navigator.clipboard.writeText(text);
+            alert('Settings copied to clipboard.');
+        } catch {
+            window.prompt('Copy these settings:', text);
+        }
+    }
+
+    async function pasteSettings() {
+        let text = '';
+        try { text = await navigator.clipboard.readText(); } catch {}
+        if (!text) text = window.prompt('Paste settings JSON:') || '';
+        if (!text.trim()) return;
+        let data;
+        try { data = JSON.parse(text); }
+        catch { alert('Invalid JSON.'); return; }
+        Object.assign(globalParams, data.global || {});
+        Object.assign(paramsA,      data.netA   || {});
+        Object.assign(paramsB,      data.netB   || {});
+        applyAllParams();
+    }
+
+    // ───────── Video recording ─────────
+    function recordVideo() {
+        const candidates = [
+            'video/mp4;codecs=avc1.42E01E',
+            'video/mp4',
+            'video/webm;codecs=vp9',
+            'video/webm;codecs=vp8',
+            'video/webm',
+        ];
+        const mime = candidates.find(t =>
+            window.MediaRecorder && MediaRecorder.isTypeSupported(t));
+        if (!mime) { alert('MediaRecorder not supported in this browser.'); return; }
+        const ext = mime.startsWith('video/mp4') ? 'mp4' : 'webm';
+
+        const stream = renderer.domElement.captureStream(60);
+        const recorder = new MediaRecorder(stream, {
+            mimeType: mime, videoBitsPerSecond: 12_000_000,
+        });
+        const chunks = [];
+        recorder.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+        recorder.onstop = () => {
+            const blob = new Blob(chunks, { type: mime });
+            const url  = URL.createObjectURL(blob);
+            const a    = document.createElement('a');
+            a.href = url;
+            a.download = `datapulse-${Date.now()}.${ext}`;
+            document.body.appendChild(a); a.click(); a.remove();
+            URL.revokeObjectURL(url);
+            recordCtrl.name(`Record 6s MP4`);
+        };
+        recorder.start();
+        const t0 = performance.now();
+        const tick = () => {
+            const elapsed = (performance.now() - t0) / 1000;
+            if (elapsed >= 6) { recorder.stop(); return; }
+            recordCtrl.name(`Recording… ${(6 - elapsed).toFixed(1)}s`);
+            requestAnimationFrame(tick);
+        };
+        tick();
+    }
+
+    const fIO = gui.addFolder('Export / Import');
+    const actions = { copy: copySettings, paste: pasteSettings, record: recordVideo };
+    fIO.add(actions, 'copy').name('Copy Settings');
+    fIO.add(actions, 'paste').name('Paste Settings');
+    const recordCtrl = fIO.add(actions, 'record').name('Record 6s MP4');
+
     const fCol = gui.addFolder('Colors');
     fCol.addColor(globalParams, 'backgroundColor').name('Background')
         .onChange(c => renderer.setClearColor(c));
@@ -358,6 +524,13 @@ window.onload = () => {
         .onChange(c => {
             netA.particles.material.uniforms.uColor.value.set(c);
             netB.particles.material.uniforms.uColor.value.set(c);
+        });
+    fCol.add(globalParams, 'glow').name('Glow')
+        .onChange(v => {
+            const mode = v ? THREE.AdditiveBlending : THREE.NormalBlending;
+            [netA.lineMaterial, netB.lineMaterial,
+             netA.particles.material, netB.particles.material]
+                .forEach(m => { m.blending = mode; m.needsUpdate = true; });
         });
 
     const fPart = gui.addFolder('Particles');
@@ -375,6 +548,8 @@ window.onload = () => {
         f.add(p, 'fiberCount', 1, MAX_FIBERS, 1).name('Fiber Count')
             .onChange(() => net._applyCount());
         f.add(p, 'mode3D').name('3D Mode');
+        f.add(p, 'cloth').name('Cloth')
+            .onChange(() => net._applyCloth());
 
         const fPos = f.addFolder('Position');
         fPos.add(p, 'startX', -1, 1, 0.01).name('Start X');
