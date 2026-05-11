@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Particle Globe</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; }
+        canvas { display: block; }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19"></script>
+</head>
+<body>
+<script>
+// ─────────────────────────────────────────────
+// Constants
+// ─────────────────────────────────────────────
+const MAX_PARTICLES = 50000;
+const ARC_SEGMENTS  = 96;
+const NUM_CONNECTORS = 5;
+
+// ─────────────────────────────────────────────
+// Renderer / Scene / Camera
+// ─────────────────────────────────────────────
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setClearColor(0x000000, 1);
+document.body.appendChild(renderer.domElement);
+
+const scene  = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(
+    50, window.innerWidth / window.innerHeight, 0.1, 200
+);
+camera.position.set(0, 0, 14);
+
+// ─────────────────────────────────────────────
+// Parameters
+// ─────────────────────────────────────────────
+const params = {
+    background:     '#000000',
+
+    // Globe position + shape — defaults place the globe so only the top
+    // cap is visible, taking up the bottom ~1/4 of the screen.
+    globeX:         0,
+    globeY:         -13,
+    globeZ:         0,
+    globeRadius:    10,
+    tiltX:          0,    // pitch — forward / back (around X)
+    tiltZ:          0,    // roll — sideways (around Z)
+    rotationSpeed:  0.03, // radians / second
+
+    // Particles (sizes in world units — dots are flat on the sphere)
+    particleCount:  4500,
+    particleColor:  '#6B5BFF',
+    particleSize:   0.06,
+    particleGlow:   false,
+    solidGlobe:     false,  // when on, the globe hides everything behind it
+
+    // Arcs
+    arcHeight:      0.42,   // fraction of radius pushed outward
+    arcOpacity:     0.85,
+
+    // Endpoint marker (world units — flat disc tangent to globe surface)
+    endpointInner:         0.07, // filled center radius
+    endpointGap:           0.08, // gap between center and ring
+    endpointRingThickness: 0.04, // ring thickness
+    endpointOpacity:       0.8,  // ring + center opacity
+};
+
+// Per-connector configuration (anchor latitudes/longitudes on the globe).
+// Defaults distributed across the visible front-top hemisphere.
+const connectors = [
+    { color: '#4ECDC4', aLat: 48, aLon:  20, bLat: 22, bLon: 110 },
+    { color: '#FF6B6B', aLat: 60, aLon:  75, bLat: 30, bLon: 150 },
+    { color: '#FFD93D', aLat: 38, aLon: 115, bLat: 18, bLon:  45 },
+    { color: '#A06CD5', aLat: 42, aLon: 160, bLat: 52, bLon:  10 },
+    { color: '#FF8E53', aLat: 26, aLon:  55, bLat: 46, bLon: 135 },
+];
+
+// ─────────────────────────────────────────────
+// Globe — Fibonacci-distributed flat-on-surface dots.
+// Each dot is a tangent disc rendered via InstancedMesh:
+// front-hemisphere dots face the camera; back-hemisphere dots
+// face away and are hidden by the depth-only mask when "solid".
+// ─────────────────────────────────────────────
+const _UP_Z = new THREE.Vector3(0, 0, 1);
+
+class Globe {
+    constructor() {
+        this.group = new THREE.Group();
+        scene.add(this.group);
+
+        const dotGeo = new THREE.CircleGeometry(1, 12);
+
+        this.material = new THREE.MeshBasicMaterial({
+            color:       new THREE.Color(params.particleColor),
+            transparent: true,
+            depthWrite:  false,
+            side:        THREE.DoubleSide,
+            blending:    params.particleGlow
+                ? THREE.AdditiveBlending : THREE.NormalBlending,
+        });
+
+        this.mesh = new THREE.InstancedMesh(
+            dotGeo, this.material, MAX_PARTICLES);
+        this.mesh.count = 0;
+        this.mesh.frustumCulled = false;
+        this.group.add(this.mesh);
+
+        this._dummy = new THREE.Object3D();
+
+        // Invisible depth-only sphere — when enabled, writes depth so
+        // back-side dots, arc segments behind the globe, and back-side
+        // endpoint markers all fail the depth test.
+        // Radius is 0.997× the dot radius so dots-on-surface stay in front.
+        this.maskSphere = new THREE.Mesh(
+            new THREE.SphereGeometry(1, 48, 32),
+            new THREE.MeshBasicMaterial({
+                colorWrite: false,
+                depthWrite: true,
+                side: THREE.FrontSide,
+            }),
+        );
+        this.maskSphere.renderOrder = -1;
+        this.maskSphere.visible     = params.solidGlobe;
+        this.group.add(this.maskSphere);
+
+        this.layout();
+        this.updateTransform();
+    }
+
+    applyMaskScale() {
+        const s = params.globeRadius * 0.997;
+        this.maskSphere.scale.set(s, s, s);
+    }
+
+    setSolid(on) {
+        this.maskSphere.visible = on;
+    }
+
+    layout() {
+        const n    = Math.min(Math.round(params.particleCount), MAX_PARTICLES);
+        const r    = params.globeRadius;
+        const size = params.particleSize;
+        const phi  = Math.PI * (3 - Math.sqrt(5)); // golden angle
+
+        const normal = new THREE.Vector3();
+        const quat   = new THREE.Quaternion();
+
+        for (let i = 0; i < n; i++) {
+            const y      = 1 - (i / (n - 1)) * 2;
+            const radius = Math.sqrt(1 - y * y);
+            const theta  = phi * i;
+            normal.set(
+                Math.cos(theta) * radius,
+                y,
+                Math.sin(theta) * radius,
+            );
+            quat.setFromUnitVectors(_UP_Z, normal);
+
+            this._dummy.position.copy(normal).multiplyScalar(r);
+            this._dummy.quaternion.copy(quat);
+            this._dummy.scale.set(size, size, 1);
+            this._dummy.updateMatrix();
+            this.mesh.setMatrixAt(i, this._dummy.matrix);
+        }
+        this.mesh.count = n;
+        this.mesh.instanceMatrix.needsUpdate = true;
+        this.applyMaskScale();
+    }
+
+    updateTransform() {
+        this.group.position.set(params.globeX, params.globeY, params.globeZ);
+        // Rotation order: y (spin) is updated each frame in tick();
+        // x and z are static tilts applied here.
+        this.group.rotation.x = THREE.MathUtils.degToRad(params.tiltX);
+        this.group.rotation.z = THREE.MathUtils.degToRad(params.tiltZ);
+    }
+
+    setGlow(on) {
+        this.material.blending = on
+            ? THREE.AdditiveBlending : THREE.NormalBlending;
+        this.material.needsUpdate = true;
+    }
+
+    tick(dt) {
+        this.group.rotation.y += params.rotationSpeed * dt;
+    }
+}
+
+// ─────────────────────────────────────────────
+// EndpointMarkers — flat tangent discs (InstancedMesh).
+// Each disc has its surface normal aligned with the globe normal at
+// the endpoint, so the ring+dot lies on the sphere instead of facing
+// the camera. The fragment shader reads UVs to draw filled center,
+// transparent gap, and thin ring.
+// ─────────────────────────────────────────────
+class EndpointMarkers {
+    constructor(parent) {
+        const N = NUM_CONNECTORS * 2;
+        const geo = new THREE.PlaneGeometry(1, 1);
+        const colors = new Float32Array(N * 3);
+        geo.setAttribute('instanceColor',
+            new THREE.InstancedBufferAttribute(colors, 3));
+
+        this.material = new THREE.ShaderMaterial({
+            uniforms: {
+                uInnerN:     { value: 0 },
+                uRingStartN: { value: 0 },
+                uRingEndN:   { value: 1.0 },
+                uOpacity:    { value: params.endpointOpacity },
+            },
+            vertexShader: `
+                attribute vec3 instanceColor;
+                varying vec3 vColor;
+                varying vec2 vUv;
+                void main() {
+                    vColor = instanceColor;
+                    vUv = uv;
+                    gl_Position = projectionMatrix * modelViewMatrix
+                                  * instanceMatrix * vec4(position, 1.0);
+                }`,
+            fragmentShader: `
+                uniform float uInnerN;
+                uniform float uRingStartN;
+                uniform float uRingEndN;
+                uniform float uOpacity;
+                varying vec3 vColor;
+                varying vec2 vUv;
+                void main() {
+                    // distance from disc center, normalized so 1.0 == outer ring
+                    float d  = length(vUv - 0.5) * 2.0;
+                    float aa = 0.04;
+
+                    float innerA = 1.0 - smoothstep(
+                        uInnerN - aa, uInnerN + aa, d);
+                    float ringA = smoothstep(
+                        uRingStartN - aa, uRingStartN + aa, d)
+                                * (1.0 - smoothstep(
+                                    uRingEndN - aa, uRingEndN + aa, d));
+                    float alpha = max(innerA, ringA * uOpacity);
+                    if (alpha < 0.02) discard;
+                    gl_FragColor = vec4(vColor, alpha);
+                }`,
+            transparent: true,
+            depthWrite:  false,
+            side:        THREE.DoubleSide,
+        });
+
+        this.mesh = new THREE.InstancedMesh(geo, this.material, N);
+        this.mesh.frustumCulled = false;
+        this.mesh.renderOrder   = 10;
+        parent.add(this.mesh);
+
+        this.colors = colors;
+        this._dummy = new THREE.Object3D();
+        this.applySizes();
+    }
+
+    setEndpoint(idx, vec, color) {
+        const normal = vec.clone().normalize();
+        const quat = new THREE.Quaternion()
+            .setFromUnitVectors(_UP_Z, normal);
+        const D = this.totalRadius * 2; // disc width = full outer diameter
+
+        this._dummy.position.copy(vec);
+        this._dummy.quaternion.copy(quat);
+        this._dummy.scale.set(D, D, 1);
+        this._dummy.updateMatrix();
+        this.mesh.setMatrixAt(idx, this._dummy.matrix);
+        this.mesh.instanceMatrix.needsUpdate = true;
+
+        this.colors[idx*3]     = color.r;
+        this.colors[idx*3 + 1] = color.g;
+        this.colors[idx*3 + 2] = color.b;
+        this.mesh.geometry.attributes.instanceColor.needsUpdate = true;
+    }
+
+    applySizes() {
+        const inner = params.endpointInner;
+        const gap   = params.endpointGap;
+        const ring  = params.endpointRingThickness;
+        const R     = inner + gap + ring;
+        this.totalRadius = R;
+        const u = this.material.uniforms;
+        u.uInnerN.value     = R > 0 ? inner / R : 0;
+        u.uRingStartN.value = R > 0 ? (inner + gap) / R : 0;
+        u.uRingEndN.value   = 1.0;
+    }
+}
+
+// ─────────────────────────────────────────────
+// Connector — quadratic-bezier arc + two endpoint markers.
+// Children of globe.group so they rotate with the globe.
+// ─────────────────────────────────────────────
+class Connector {
+    constructor(globe, markers, index, cfg) {
+        this.globe   = globe;
+        this.markers = markers;
+        this.index   = index;
+        this.cfg     = cfg;
+        this.color   = new THREE.Color(cfg.color);
+
+        this.linePositions = new Float32Array((ARC_SEGMENTS + 1) * 3);
+        const lineGeo = new THREE.BufferGeometry();
+        lineGeo.setAttribute('position',
+            new THREE.BufferAttribute(this.linePositions, 3));
+        lineGeo.attributes.position.setUsage(THREE.DynamicDrawUsage);
+
+        this.lineMaterial = new THREE.LineBasicMaterial({
+            color:       this.color,
+            transparent: true,
+            opacity:     params.arcOpacity,
+        });
+        this.line = new THREE.Line(lineGeo, this.lineMaterial);
+        this.line.frustumCulled = false;
+        globe.group.add(this.line);
+
+        this.rebuild();
+    }
+
+    setColor(hex) {
+        this.color.set(hex);
+        this.lineMaterial.color.set(hex);
+        this.rebuild();
+    }
+
+    static latLonToVec(lat, lon, r) {
+        const la = THREE.MathUtils.degToRad(lat);
+        const lo = THREE.MathUtils.degToRad(lon);
+        return new THREE.Vector3(
+            r * Math.cos(la) * Math.cos(lo),
+            r * Math.sin(la),
+            r * Math.cos(la) * Math.sin(lo),
+        );
+    }
+
+    rebuild() {
+        const r = params.globeRadius;
+        const A = Connector.latLonToVec(this.cfg.aLat, this.cfg.aLon, r);
+        const B = Connector.latLonToVec(this.cfg.bLat, this.cfg.bLon, r);
+
+        const mid    = A.clone().add(B).multiplyScalar(0.5);
+        const dirOut = mid.clone().normalize();
+        const chord  = A.distanceTo(B);
+        const lift   = r * params.arcHeight + chord * 0.12;
+        const ctrl   = mid.add(dirOut.multiplyScalar(lift));
+
+        for (let i = 0; i <= ARC_SEGMENTS; i++) {
+            const t = i / ARC_SEGMENTS;
+            const u = 1 - t;
+            this.linePositions[i*3]     = u*u*A.x + 2*u*t*ctrl.x + t*t*B.x;
+            this.linePositions[i*3 + 1] = u*u*A.y + 2*u*t*ctrl.y + t*t*B.y;
+            this.linePositions[i*3 + 2] = u*u*A.z + 2*u*t*ctrl.z + t*t*B.z;
+        }
+        this.line.geometry.attributes.position.needsUpdate = true;
+
+        // markers exactly on the bezier endpoints
+        this.markers.setEndpoint(this.index * 2,     A, this.color);
+        this.markers.setEndpoint(this.index * 2 + 1, B, this.color);
+    }
+}
+
+// ─────────────────────────────────────────────
+// Scene assembly
+// ─────────────────────────────────────────────
+const globe   = new Globe();
+const markers = new EndpointMarkers(globe.group);
+const conns   = connectors.map((c, i) => new Connector(globe, markers, i, c));
+renderer.setClearColor(params.background);
+
+// ─────────────────────────────────────────────
+// GUI
+// ─────────────────────────────────────────────
+const gui = new lil.GUI({ title: 'Particle Globe' });
+gui.close();
+
+// ───────── Settings export / import ─────────
+function applyAllParams() {
+    renderer.setClearColor(params.background);
+    globe.material.color.set(params.particleColor);
+    globe.setGlow(params.particleGlow);
+    globe.setSolid(params.solidGlobe);
+    globe.layout();
+    globe.updateTransform();
+    markers.applySizes();
+    markers.material.uniforms.uOpacity.value = params.endpointOpacity;
+    conns.forEach((c, i) => {
+        c.lineMaterial.opacity = params.arcOpacity;
+        // setColor also rebuilds, so anchor + marker color flow through.
+        c.setColor(connectors[i].color);
+    });
+    gui.controllersRecursive().forEach(ctrl => ctrl.updateDisplay());
+}
+
+async function exportSettings() {
+    const text = JSON.stringify({ params, connectors }, null, 2);
+    try {
+        await navigator.clipboard.writeText(text);
+        alert('Settings copied to clipboard.');
+    } catch {
+        window.prompt('Copy these settings:', text);
+    }
+}
+
+async function importSettings() {
+    let text = '';
+    try { text = await navigator.clipboard.readText(); } catch {}
+    if (!text) text = window.prompt('Paste settings JSON:') || '';
+    if (!text.trim()) return;
+    let data;
+    try { data = JSON.parse(text); }
+    catch { alert('Invalid JSON.'); return; }
+    Object.assign(params, data.params || {});
+    (data.connectors || []).forEach((c, i) => {
+        if (connectors[i]) Object.assign(connectors[i], c);
+    });
+    applyAllParams();
+}
+
+const fIO = gui.addFolder('Export / Import');
+const ioActions = { copy: exportSettings, paste: importSettings };
+fIO.add(ioActions, 'copy').name('Copy Settings');
+fIO.add(ioActions, 'paste').name('Paste Settings');
+
+gui.addColor(params, 'background').name('Background')
+    .onChange(c => renderer.setClearColor(c));
+
+const fG = gui.addFolder('Globe Position');
+fG.add(params, 'globeX', -20, 20, 0.1).name('X')
+    .onChange(() => globe.updateTransform());
+fG.add(params, 'globeY', -30, 15, 0.1).name('Y')
+    .onChange(() => globe.updateTransform());
+fG.add(params, 'globeZ', -15, 15, 0.1).name('Z')
+    .onChange(() => globe.updateTransform());
+fG.add(params, 'tiltX', -90, 90, 1).name('Tilt Forward/Back')
+    .onChange(() => globe.updateTransform());
+fG.add(params, 'tiltZ', -90, 90, 1).name('Tilt Sideways')
+    .onChange(() => globe.updateTransform());
+
+const fS = gui.addFolder('Globe Shape');
+fS.add(params, 'globeRadius', 2, 25, 0.1).name('Radius')
+    .onChange(() => { globe.layout(); conns.forEach(c => c.rebuild()); });
+fS.add(params, 'rotationSpeed', -1, 1, 0.005).name('Rotation Speed');
+
+const fP = gui.addFolder('Particles');
+fP.add(params, 'particleCount', 500, MAX_PARTICLES, 100).name('Count')
+    .onChange(() => globe.layout());
+fP.add(params, 'particleSize', 0.01, 0.4, 0.005).name('Size')
+    .onChange(() => globe.layout());
+fP.addColor(params, 'particleColor').name('Color')
+    .onChange(c => globe.material.color.set(c));
+fP.add(params, 'particleGlow').name('Glow')
+    .onChange(v => globe.setGlow(v));
+fP.add(params, 'solidGlobe').name('Solid Globe')
+    .onChange(v => globe.setSolid(v));
+
+const fA = gui.addFolder('Arcs');
+fA.add(params, 'arcHeight', 0, 2, 0.01).name('Arc Height')
+    .onChange(() => conns.forEach(c => c.rebuild()));
+fA.add(params, 'arcOpacity', 0, 1, 0.01).name('Opacity')
+    .onChange(v => conns.forEach(c => { c.lineMaterial.opacity = v; }));
+
+const fEnd = gui.addFolder('Endpoint Marker');
+const refreshEndpoints = () => {
+    markers.applySizes();
+    conns.forEach(c => c.rebuild());
+};
+fEnd.add(params, 'endpointInner', 0, 0.5, 0.005).name('Center Radius')
+    .onChange(refreshEndpoints);
+fEnd.add(params, 'endpointGap', 0, 0.5, 0.005).name('Gap')
+    .onChange(refreshEndpoints);
+fEnd.add(params, 'endpointRingThickness', 0, 0.3, 0.005).name('Ring Thickness')
+    .onChange(refreshEndpoints);
+fEnd.add(params, 'endpointOpacity', 0, 1, 0.01).name('Ring Opacity')
+    .onChange(v => { markers.material.uniforms.uOpacity.value = v; });
+
+const fC = gui.addFolder('Connector Colors');
+connectors.forEach((cfg, i) => {
+    fC.addColor(cfg, 'color').name(`Connector ${i + 1}`)
+        .onChange(hex => conns[i].setColor(hex));
+});
+
+const fE = gui.addFolder('Connector Endpoints');
+fE.close();
+connectors.forEach((cfg, i) => {
+    const sub = fE.addFolder(`Connector ${i + 1}`);
+    sub.close();
+    sub.add(cfg, 'aLat', -85, 85, 1).name('Start Lat')
+        .onChange(() => conns[i].rebuild());
+    sub.add(cfg, 'aLon', -180, 180, 1).name('Start Lon')
+        .onChange(() => conns[i].rebuild());
+    sub.add(cfg, 'bLat', -85, 85, 1).name('End Lat')
+        .onChange(() => conns[i].rebuild());
+    sub.add(cfg, 'bLon', -180, 180, 1).name('End Lon')
+        .onChange(() => conns[i].rebuild());
+});
+
+// ─────────────────────────────────────────────
+// Resize + main loop
+// ─────────────────────────────────────────────
+window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+const clock = new THREE.Clock();
+(function animate() {
+    requestAnimationFrame(animate);
+    globe.tick(clock.getDelta());
+    renderer.render(scene, camera);
+})();
+</script>
+</body>
+</html>
