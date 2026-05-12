@@ -16,9 +16,97 @@
 // ─────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────
-const MAX_PARTICLES = 50000;
+const MAX_PARTICLES = 80000;
 const ARC_SEGMENTS  = 96;
 const NUM_CONNECTORS = 5;
+
+// ─────────────────────────────────────────────
+// Procedural land mask. Each entry approximates a chunk of a
+// continent as an elliptical blob in (lat, lon) space:
+//   [centerLat, centerLon, sigmaLat, sigmaLon, weight]
+// landField() sums their gaussian contributions; isLand() thresholds it.
+// Tuned so the silhouettes read as recognisable continents at a glance.
+// ─────────────────────────────────────────────
+const LAND_BLOBS = [
+    // North America
+    [  62, -100, 14, 38, 1.1 ],
+    [  45, -100, 11, 26, 1.05],
+    [  32,  -98,  7, 14, 0.95],
+    [  20,  -90,  5,  7, 0.75],
+    [  64, -150, 10, 18, 0.85],
+    [  78,  -90, 10, 55, 0.7 ],
+    // Greenland
+    [  72,  -42, 11, 14, 1.0 ],
+    // Central America / Caribbean
+    [  12,  -82,  4,  8, 0.65],
+    // South America
+    [   2,  -62,  8, 10, 1.05],
+    [ -12,  -60, 10, 11, 1.1 ],
+    [ -25,  -60, 10,  9, 1.0 ],
+    [ -38,  -68,  8,  5, 0.9 ],
+    [ -50,  -72,  5,  3, 0.7 ],
+    // Africa
+    [  22,    8, 10, 18, 1.05],
+    [  10,   18, 10, 18, 1.1 ],
+    [  -5,   22, 10, 15, 1.05],
+    [ -18,   25, 10, 13, 1.0 ],
+    [ -30,   24,  6,  9, 0.9 ],
+    // Madagascar
+    [ -20,   47,  6,  3, 0.75],
+    // Europe
+    [  52,   10,  8, 16, 1.0 ],
+    [  60,   28, 10, 22, 1.0 ],
+    [  45,   30,  7, 14, 0.95],
+    [  64,   18,  6,  8, 0.8 ],   // Scandinavia
+    [  53,  -10,  5,  6, 0.7 ],   // British Isles
+    // Asia
+    [  65,   90, 12, 48, 1.25],
+    [  55,  120, 12, 32, 1.15],
+    [  45,   80, 10, 28, 1.1 ],
+    [  40,  110, 10, 22, 1.05],
+    // Middle East / Arabia
+    [  27,   45,  9, 13, 1.0 ],
+    // India
+    [  22,   78,  9, 12, 1.0 ],
+    // SE Asia mainland
+    [  16,  102,  8, 12, 0.95],
+    // East Asia
+    [  34,  118,  8, 14, 1.0 ],
+    // Japan
+    [  38,  138,  6,  4, 0.8 ],
+    // Indonesia / Borneo / New Guinea archipelago
+    [  -2,  115,  5, 14, 0.85],
+    [  -5,  140,  5, 10, 0.85],
+    // Philippines
+    [  12,  122,  5,  3, 0.7 ],
+    // Australia
+    [ -25,  134, 10, 18, 1.1 ],
+    // Tasmania
+    [ -42,  146,  3,  3, 0.65],
+    // New Zealand
+    [ -42,  172,  5,  3, 0.7 ],
+    // Antarctica — wide cap covering longitudes
+    [ -83,    0, 11, 200, 1.6 ],
+];
+
+function landField(lat, lon) {
+    let sum = 0;
+    for (let k = 0; k < LAND_BLOBS.length; k++) {
+        const b = LAND_BLOBS[k];
+        let dLon = lon - b[1];
+        if (dLon >  180) dLon -= 360;
+        if (dLon < -180) dLon += 360;
+        const dLat = lat - b[0];
+        const a = dLat / b[2];
+        const c = dLon / b[3];
+        sum += b[4] * Math.exp(-(a*a + c*c) * 1.4);
+    }
+    return sum;
+}
+
+function isLand(lat, lon) {
+    return landField(lat, lon) > 0.38;
+}
 
 // ─────────────────────────────────────────────
 // Renderer / Scene / Camera
@@ -52,11 +140,17 @@ const params = {
     rotationSpeed:  0.03, // radians / second
 
     // Particles (sizes in world units — dots are flat on the sphere)
-    particleCount:  4500,
+    particleCount:  9000,
     particleColor:  '#6B5BFF',
     particleSize:   0.06,
     particleGlow:   false,
     solidGlobe:     false,  // when on, the globe hides everything behind it
+
+    // Earth texture — when on, particles light up on continents
+    // (using the procedural land mask above) and dim over oceans.
+    earthMode:      true,
+    oceanColor:     '#1a2440',
+    oceanSize:      0.55,   // ocean dot size as a fraction of land dot size
 
     // Arcs
     arcHeight:      0.42,   // fraction of radius pushed outward
@@ -94,8 +188,10 @@ class Globe {
 
         const dotGeo = new THREE.CircleGeometry(1, 12);
 
+        // White base color so the per-instance color is shown directly
+        // (instanceColor is multiplied with material.color by Three.js).
         this.material = new THREE.MeshBasicMaterial({
-            color:       new THREE.Color(params.particleColor),
+            color:       0xffffff,
             transparent: true,
             depthWrite:  false,
             side:        THREE.DoubleSide,
@@ -105,11 +201,16 @@ class Globe {
 
         this.mesh = new THREE.InstancedMesh(
             dotGeo, this.material, MAX_PARTICLES);
+        // Pre-allocate the per-instance color buffer so we can fill it
+        // during layout regardless of the current count.
+        this.mesh.instanceColor = new THREE.InstancedBufferAttribute(
+            new Float32Array(MAX_PARTICLES * 3), 3);
         this.mesh.count = 0;
         this.mesh.frustumCulled = false;
         this.group.add(this.mesh);
 
         this._dummy = new THREE.Object3D();
+        this._tmpColor = new THREE.Color();
 
         // Invisible depth-only sphere — when enabled, writes depth so
         // back-side dots, arc segments behind the globe, and back-side
@@ -145,29 +246,49 @@ class Globe {
         const r    = params.globeRadius;
         const size = params.particleSize;
         const phi  = Math.PI * (3 - Math.sqrt(5)); // golden angle
+        const RAD2DEG = 180 / Math.PI;
+
+        const landColor   = new THREE.Color(params.particleColor);
+        const oceanColor  = new THREE.Color(params.oceanColor);
+        const earthOn     = params.earthMode;
+        const oceanScale  = size * params.oceanSize;
 
         const normal = new THREE.Vector3();
         const quat   = new THREE.Quaternion();
+        const colorArr = this.mesh.instanceColor.array;
 
         for (let i = 0; i < n; i++) {
             const y      = 1 - (i / (n - 1)) * 2;
             const radius = Math.sqrt(1 - y * y);
             const theta  = phi * i;
-            normal.set(
-                Math.cos(theta) * radius,
-                y,
-                Math.sin(theta) * radius,
-            );
+            const nx = Math.cos(theta) * radius;
+            const ny = y;
+            const nz = Math.sin(theta) * radius;
+
+            // Lat/lon in the globe's local frame — these stay fixed on the
+            // surface as the globe spins, so the continents move with it.
+            const lat = Math.asin(ny) * RAD2DEG;
+            const lon = Math.atan2(nz, nx) * RAD2DEG;
+            const land = earthOn ? isLand(lat, lon) : true;
+
+            normal.set(nx, ny, nz);
             quat.setFromUnitVectors(_UP_Z, normal);
 
+            const s = land ? size : oceanScale;
             this._dummy.position.copy(normal).multiplyScalar(r);
             this._dummy.quaternion.copy(quat);
-            this._dummy.scale.set(size, size, 1);
+            this._dummy.scale.set(s, s, 1);
             this._dummy.updateMatrix();
             this.mesh.setMatrixAt(i, this._dummy.matrix);
+
+            const c = land ? landColor : oceanColor;
+            colorArr[i*3]     = c.r;
+            colorArr[i*3 + 1] = c.g;
+            colorArr[i*3 + 2] = c.b;
         }
         this.mesh.count = n;
         this.mesh.instanceMatrix.needsUpdate = true;
+        this.mesh.instanceColor.needsUpdate = true;
         this.applyMaskScale();
     }
 
@@ -380,7 +501,6 @@ gui.close();
 // ───────── Settings export / import ─────────
 function applyAllParams() {
     renderer.setClearColor(params.background);
-    globe.material.color.set(params.particleColor);
     globe.setGlow(params.particleGlow);
     globe.setSolid(params.solidGlobe);
     globe.layout();
@@ -450,12 +570,20 @@ fP.add(params, 'particleCount', 500, MAX_PARTICLES, 100).name('Count')
     .onChange(() => globe.layout());
 fP.add(params, 'particleSize', 0.01, 0.4, 0.005).name('Size')
     .onChange(() => globe.layout());
-fP.addColor(params, 'particleColor').name('Color')
-    .onChange(c => globe.material.color.set(c));
+fP.addColor(params, 'particleColor').name('Land Color')
+    .onChange(() => globe.layout());
 fP.add(params, 'particleGlow').name('Glow')
     .onChange(v => globe.setGlow(v));
 fP.add(params, 'solidGlobe').name('Solid Globe')
     .onChange(v => globe.setSolid(v));
+
+const fEarth = gui.addFolder('Earth Texture');
+fEarth.add(params, 'earthMode').name('Show Continents')
+    .onChange(() => globe.layout());
+fEarth.addColor(params, 'oceanColor').name('Ocean Color')
+    .onChange(() => globe.layout());
+fEarth.add(params, 'oceanSize', 0, 1, 0.01).name('Ocean Dot Size')
+    .onChange(() => globe.layout());
 
 const fA = gui.addFolder('Arcs');
 fA.add(params, 'arcHeight', 0, 2, 0.01).name('Arc Height')
