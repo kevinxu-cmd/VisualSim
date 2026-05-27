@@ -21,71 +21,101 @@ const ARC_SEGMENTS  = 96;
 const NUM_CONNECTORS = 5;
 
 // ─────────────────────────────────────────────
-// Procedural land mask. Each entry approximates a chunk of a
-// continent as an elliptical blob in (lat, lon) space:
+// Procedural land mask. Each entry approximates a region as an
+// elliptical gaussian blob in (lat, lon) space:
 //   [centerLat, centerLon, sigmaLat, sigmaLon, weight]
-// landField() sums their gaussian contributions; isLand() thresholds it.
-// Tuned so the silhouettes read as recognisable continents at a glance.
+// Positive weights add land; NEGATIVE weights subtract — used to
+// carve out inland seas (Mediterranean, Hudson Bay, Caspian, etc.)
+// from the surrounding continental mass. landField() sums all blobs;
+// isLand() thresholds the result.
 // ─────────────────────────────────────────────
 const LAND_BLOBS = [
-    // North America
-    [  62, -100, 14, 38, 1.1 ],
-    [  45, -100, 11, 26, 1.05],
-    [  32,  -98,  7, 14, 0.95],
-    [  20,  -90,  5,  7, 0.75],
-    [  64, -150, 10, 18, 0.85],
-    [  78,  -90, 10, 55, 0.7 ],
-    // Greenland
-    [  72,  -42, 11, 14, 1.0 ],
-    // Central America / Caribbean
-    [  12,  -82,  4,  8, 0.65],
-    // South America
-    [   2,  -62,  8, 10, 1.05],
-    [ -12,  -60, 10, 11, 1.1 ],
-    [ -25,  -60, 10,  9, 1.0 ],
-    [ -38,  -68,  8,  5, 0.9 ],
-    [ -50,  -72,  5,  3, 0.7 ],
-    // Africa
-    [  22,    8, 10, 18, 1.05],
-    [  10,   18, 10, 18, 1.1 ],
-    [  -5,   22, 10, 15, 1.05],
-    [ -18,   25, 10, 13, 1.0 ],
-    [ -30,   24,  6,  9, 0.9 ],
-    // Madagascar
-    [ -20,   47,  6,  3, 0.75],
-    // Europe
-    [  52,   10,  8, 16, 1.0 ],
-    [  60,   28, 10, 22, 1.0 ],
-    [  45,   30,  7, 14, 0.95],
-    [  64,   18,  6,  8, 0.8 ],   // Scandinavia
-    [  53,  -10,  5,  6, 0.7 ],   // British Isles
-    // Asia
-    [  65,   90, 12, 48, 1.25],
-    [  55,  120, 12, 32, 1.15],
-    [  45,   80, 10, 28, 1.1 ],
-    [  40,  110, 10, 22, 1.05],
-    // Middle East / Arabia
-    [  27,   45,  9, 13, 1.0 ],
-    // India
-    [  22,   78,  9, 12, 1.0 ],
-    // SE Asia mainland
-    [  16,  102,  8, 12, 0.95],
-    // East Asia
-    [  34,  118,  8, 14, 1.0 ],
-    // Japan
-    [  38,  138,  6,  4, 0.8 ],
-    // Indonesia / Borneo / New Guinea archipelago
-    [  -2,  115,  5, 14, 0.85],
-    [  -5,  140,  5, 10, 0.85],
-    // Philippines
-    [  12,  122,  5,  3, 0.7 ],
-    // Australia
-    [ -25,  134, 10, 18, 1.1 ],
-    // Tasmania
-    [ -42,  146,  3,  3, 0.65],
-    // New Zealand
-    [ -42,  172,  5,  3, 0.7 ],
-    // Antarctica — wide cap covering longitudes
+    // ── NORTH AMERICA — big anchor + regional fills ──
+    [  50, -100, 13, 28, 1.1 ],   // Canada/US main body
+    [  47,  -75, 11, 14, 1.0 ],   // Eastern Canada / NE US
+    [  45, -115,  9, 14, 1.0 ],   // Western US / Pacific coast
+    [  55,  -62,  5,  8, 0.7 ],   // Labrador
+    [  66, -152,  6, 14, 1.0 ],   // Alaska
+    [  74,  -95,  6, 30, 0.8 ],   // Canadian Arctic Archipelago
+    [  24, -103,  6,  8, 0.95],   // Mexico
+    [  14,  -86,  3,  7, 0.7 ],   // Central America
+    [  28,  -82,  5,  2, 0.7 ],   // Florida peninsula
+    [  19,  -89,  3,  3, 0.6 ],   // Yucatan
+    [  28, -113,  6,  2, 0.55],   // Baja California
+    [  50,  -57,  4,  4, 0.7 ],   // Newfoundland
+    [  60,  -86,  5,  7, -1.1 ],  // Hudson Bay (carve)
+    [  25,  -90,  3,  6, -0.65],  // Gulf of Mexico (carve)
+
+    // ── GREENLAND ──
+    [  72,  -42,  9, 11, 1.05],
+
+    // ── SOUTH AMERICA ──
+    [ -10,  -60, 16, 12, 1.15],   // Main body (Amazon / Brazil)
+    [ -10,  -42,  8,  6, 0.85],   // Brazil east bulge
+    [   5,  -65,  4,  8, 0.7 ],   // Venezuela / Guianas
+    [ -40,  -68,  7,  5, 0.9 ],   // Patagonia
+    [ -53,  -71,  3,  3, 0.55],   // Tierra del Fuego
+    [ -25,  -71, 10,  2, 0.45],   // Chile coastal strip
+
+    // ── AFRICA ──
+    [   5,   22, 22, 18, 1.2 ],   // Main sub-Saharan body
+    [  22,    2, 10, 14, 0.95],   // Sahara west / NW Africa
+    [  22,   25, 10, 14, 0.95],   // Sahara east / NE Africa (Libya/Egypt)
+    [  10,   -8,  4,  6, 0.7 ],   // West Africa coast bulge
+    [ -22,   25,  9, 11, 1.0 ],   // Southern Africa
+    [ -32,   22,  5,  7, 0.85],   // Cape region
+    [   8,   45,  5,  5, 0.85],   // Horn of Africa
+    [ -20,   47,  6,  2, 0.8 ],   // Madagascar
+    [  35,   18,  3, 24, -1.3 ],  // Mediterranean (carve)
+    [  20,   38,  7,  2, -0.75],  // Red Sea (carve)
+
+    // ── EUROPE ──
+    [  50,   15,  8, 20, 0.95],   // Main mass
+    [  40,   -4,  5,  5, 0.75],   // Iberia
+    [  43,   13,  5,  2, 0.6 ],   // Italian peninsula
+    [  42,   22,  5,  6, 0.75],   // Balkans
+    [  39,   22,  3,  4, 0.6 ],   // Greece
+    [  62,   18,  8,  8, 0.9 ],   // Scandinavia
+    [  54,   -3,  4,  4, 0.7 ],   // British Isles
+    [  65,  -19,  3,  5, 0.65],   // Iceland
+
+    // ── ASIA ──
+    [  62,   90, 12, 40, 1.2 ],   // Russia / W+C Siberia
+    [  65,  140,  9, 22, 1.0 ],   // East Siberia
+    [  40,   90, 13, 28, 1.1 ],   // Central Asia / China interior
+    [  35,  115,  8, 10, 0.95],   // East China
+    [  46,  125,  8, 14, 1.0 ],   // Manchuria / NE China
+    [  24,   45,  9, 11, 1.0 ],   // Arabian Peninsula
+    [  39,   35,  4,  9, 0.85],   // Anatolia / Turkey
+    [  32,   55,  6, 10, 0.9 ],   // Iran
+    [  22,   78,  9,  9, 1.0 ],   // India main
+    [  10,   78,  5,  3, 0.65],   // Indian peninsula tip
+    [   8,   81,  3,  3, 0.55],   // Sri Lanka
+    [  15,  103,  8,  8, 0.9 ],   // Indochina
+    [   4,  102,  6,  2, 0.55],   // Malay Peninsula
+    [  38,  128,  4,  3, 0.7 ],   // Korea
+    [  38,  138,  6,  3, 0.75],   // Japan
+    [  57,  159,  6,  3, 0.75],   // Kamchatka
+    [  42,   50,  4,  3, -0.9 ],  // Caspian Sea (carve)
+    [  43,   35,  3,  4, -0.85],  // Black Sea (carve)
+    [  27,   51,  3,  4, -0.55],  // Persian Gulf (carve)
+
+    // ── SE ASIA / OCEANIA ──
+    [  -1,  102,  7,  2, 0.7 ],   // Sumatra
+    [   1,  114,  5,  5, 0.8 ],   // Borneo
+    [  -7,  110,  2,  5, 0.6 ],   // Java
+    [  -5,  140,  4,  8, 0.85],   // New Guinea
+    [  12,  122,  6,  2, 0.6 ],   // Philippines
+
+    // ── AUSTRALIA / NZ ──
+    [ -23,  134,  8, 18, 1.15],   // Australia main
+    [ -26,  120,  8, 10, 1.0 ],   // Western Australia
+    [ -30,  148, 10,  8, 1.0 ],   // Eastern Australia
+    [ -42,  146,  4,  4, 0.7 ],   // Tasmania
+    [ -39,  175,  4,  2, 0.65],   // NZ North Island
+    [ -44,  169,  4,  2, 0.65],   // NZ South Island
+
+    // ── ANTARCTICA — wide cap spanning all longitudes ──
     [ -83,    0, 11, 200, 1.6 ],
 ];
 
