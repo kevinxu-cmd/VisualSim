@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Shader Gradient — Arcs</title>
+<style>
+    html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #000; }
+    canvas { display: block; }
+</style>
+</head>
+<body>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19"></script>
+<script>
+// ─────────────────────────────────────────────
+// Shader Gradient — smooth 4-stop linear gradient (optionally modulated by
+// FBM "texture") with hard-edge parabolic arc fills layered on top. The
+// arcs no longer glow; each one fills the region on one side of its curve
+// with its own color, giving a paper-cut / horizon-band look.
+// ─────────────────────────────────────────────
+
+const MAX_STREAKS = 4;
+
+const vertSrc = `
+varying vec2 vUv;
+void main() {
+    vUv = uv;
+    gl_Position = vec4(position, 1.0);
+}
+`;
+
+const fragSrc = `
+precision highp float;
+varying vec2 vUv;
+
+uniform vec2  uResolution;
+uniform float uTime;
+
+// Gradient
+uniform vec3  uColor1;
+uniform vec3  uColor2;
+uniform vec3  uColor3;
+uniform vec3  uColor4;
+uniform float uGradAngle;       // radians, 0 = +x, pi/2 = +y
+uniform float uTextureAmount;   // 0 = clean linear gradient, 1 = full FBM mix
+uniform float uNoiseScale;
+uniform float uSpeed;
+uniform float uGrain;
+uniform float uContrast;
+uniform float uBrightness;
+
+// Arcs (hard-edge gradient regions)
+uniform int   uStreakCount;
+// per-streak A: x=yCenter, y=curvature, z=tilt, w=softness
+uniform vec4  uStreakA[${MAX_STREAKS}];
+// per-streak B: x=intensity, y=side (>=0 fill above, <0 fill below), z=falloff, w=unused
+uniform vec4  uStreakB[${MAX_STREAKS}];
+uniform vec3  uStreakColor[${MAX_STREAKS}];
+
+// ── value noise + fbm ──
+float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+float noise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(
+        mix(hash(i),                 hash(i + vec2(1.0, 0.0)), u.x),
+        mix(hash(i + vec2(0.0,1.0)), hash(i + vec2(1.0, 1.0)), u.x),
+        u.y);
+}
+float fbm(vec2 p) {
+    float v = 0.0;
+    float a = 0.5;
+    for (int k = 0; k < 5; k++) {
+        v += a * noise(p);
+        p *= 2.02;
+        a *= 0.5;
+    }
+    return v;
+}
+
+// 4-stop piecewise-linear gradient sampled at t in [0,1].
+vec3 gradient4(float t) {
+    t = clamp(t, 0.0, 1.0);
+    if (t < 1.0/3.0)      return mix(uColor1, uColor2, t * 3.0);
+    else if (t < 2.0/3.0) return mix(uColor2, uColor3, (t - 1.0/3.0) * 3.0);
+    else                  return mix(uColor3, uColor4, (t - 2.0/3.0) * 3.0);
+}
+
+// Project uv onto the gradient axis so t spans exactly [0,1] across the
+// frame for any angle. Divides by |dir.x|+|dir.y| (the projection of the
+// unit square onto the direction vector).
+float gradAxis(vec2 uv, float angleRad) {
+    vec2 dir = vec2(cos(angleRad), sin(angleRad));
+    float scale = abs(dir.x) + abs(dir.y);
+    return 0.5 + dot(uv - 0.5, dir) / max(scale, 1e-4);
+}
+
+void main() {
+    vec2 uv = vUv;
+    float aspect = uResolution.x / max(uResolution.y, 1.0);
+    vec2 sUv = vec2(uv.x * aspect, uv.y);
+    float t = uTime * uSpeed;
+
+    // ── background ──────────────────────────────
+    // Clean linear gradient is the base. When uTextureAmount > 0 we blend
+    // toward the FBM-modulated 4-way color mix from the prior version.
+    float axis = gradAxis(uv, uGradAngle);
+    vec3 cleanCol = gradient4(axis);
+
+    vec3 col = cleanCol;
+    if (uTextureAmount > 0.0) {
+        float n1 = fbm(sUv * uNoiseScale         + vec2( t * 0.30, t * 0.22));
+        float n2 = fbm(sUv * uNoiseScale * 1.70  + vec2(-t * 0.18, t * 0.31) + vec2(13.0, 7.0));
+        float n3 = fbm(sUv * uNoiseScale * 0.90  + vec2( t * 0.12,-t * 0.26) + vec2(-5.0, 9.0));
+        vec3 c12 = mix(uColor1, uColor2, smoothstep(0.10, 0.90, n1));
+        vec3 c34 = mix(uColor3, uColor4, smoothstep(0.10, 0.90, n3));
+        vec3 texCol = mix(c12, c34, smoothstep(0.25, 0.75, n2));
+        col = mix(cleanCol, texCol, clamp(uTextureAmount, 0.0, 1.0));
+    }
+
+    // ── arc fills ───────────────────────────────
+    // Each arc defines a parabola y_curve(x). The arc fills the half-plane
+    // on its chosen side with a flat color; a smoothstep band of width
+    // 2*softness around the curve controls how hard the edge is.
+    // The falloff term (B.z, 0..1) fades the fill with distance from the
+    // curve — 0 keeps the full fill, 1 collapses it into a thin gradient
+    // band hugging the edge.
+    // (Loop unrolled — WebGL 1.0 won't dynamic-index a uniform array.)
+    float xRel = uv.x - 0.5;
+    float xSq  = xRel * xRel;
+    vec4 A; vec4 B; vec3 sc;
+    float yCurve; float d; float soft; float side; float mask; float gate;
+    float fillDist; float fadeDist; float fade;
+
+    gate = step(0.5, float(uStreakCount) - 0.0);
+    A = uStreakA[0]; B = uStreakB[0]; sc = uStreakColor[0];
+    yCurve = A.x + A.y * (1.0 - 4.0 * xSq) + A.z * xRel;
+    d = uv.y - yCurve;
+    soft = max(A.w, 0.0005);
+    side = (B.y >= 0.0) ? 1.0 : -1.0;
+    mask = smoothstep(-soft, soft, d * side);
+    fillDist = max(0.0, d * side);
+    fadeDist = mix(2.0, 0.02, clamp(B.z, 0.0, 1.0));
+    fade = smoothstep(fadeDist, 0.0, fillDist);
+    col = mix(col, sc, gate * mask * fade * B.x);
+
+    gate = step(0.5, float(uStreakCount) - 1.0);
+    A = uStreakA[1]; B = uStreakB[1]; sc = uStreakColor[1];
+    yCurve = A.x + A.y * (1.0 - 4.0 * xSq) + A.z * xRel;
+    d = uv.y - yCurve;
+    soft = max(A.w, 0.0005);
+    side = (B.y >= 0.0) ? 1.0 : -1.0;
+    mask = smoothstep(-soft, soft, d * side);
+    fillDist = max(0.0, d * side);
+    fadeDist = mix(2.0, 0.02, clamp(B.z, 0.0, 1.0));
+    fade = smoothstep(fadeDist, 0.0, fillDist);
+    col = mix(col, sc, gate * mask * fade * B.x);
+
+    gate = step(0.5, float(uStreakCount) - 2.0);
+    A = uStreakA[2]; B = uStreakB[2]; sc = uStreakColor[2];
+    yCurve = A.x + A.y * (1.0 - 4.0 * xSq) + A.z * xRel;
+    d = uv.y - yCurve;
+    soft = max(A.w, 0.0005);
+    side = (B.y >= 0.0) ? 1.0 : -1.0;
+    mask = smoothstep(-soft, soft, d * side);
+    fillDist = max(0.0, d * side);
+    fadeDist = mix(2.0, 0.02, clamp(B.z, 0.0, 1.0));
+    fade = smoothstep(fadeDist, 0.0, fillDist);
+    col = mix(col, sc, gate * mask * fade * B.x);
+
+    gate = step(0.5, float(uStreakCount) - 3.0);
+    A = uStreakA[3]; B = uStreakB[3]; sc = uStreakColor[3];
+    yCurve = A.x + A.y * (1.0 - 4.0 * xSq) + A.z * xRel;
+    d = uv.y - yCurve;
+    soft = max(A.w, 0.0005);
+    side = (B.y >= 0.0) ? 1.0 : -1.0;
+    mask = smoothstep(-soft, soft, d * side);
+    fillDist = max(0.0, d * side);
+    fadeDist = mix(2.0, 0.02, clamp(B.z, 0.0, 1.0));
+    fade = smoothstep(fadeDist, 0.0, fillDist);
+    col = mix(col, sc, gate * mask * fade * B.x);
+
+    // contrast around 0.5, then brightness
+    col = (col - 0.5) * uContrast + 0.5;
+    col *= uBrightness;
+
+    // film grain
+    float g = (hash(uv * 800.0 + t * 60.0) - 0.5) * uGrain;
+    col += g;
+
+    gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+// ─────────────────────────────────────────────
+// Renderer / scene
+// ─────────────────────────────────────────────
+const renderer = new THREE.WebGLRenderer({ antialias: false });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+document.body.appendChild(renderer.domElement);
+
+const scene  = new THREE.Scene();
+const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
+// ─────────────────────────────────────────────
+// Parameters — defaults: clean vertical gradient, one hard-edge horizon arc.
+// ─────────────────────────────────────────────
+const params = {
+    // Gradient palette (sampled in order along the gradient axis)
+    color1:         '#ff8a3d',
+    color2:         '#ffb86a',
+    color3:         '#fff3d6',
+    color4:         '#ffd680',
+
+    // Background
+    gradAngle:      90,     // degrees: 0 = left→right, 90 = bottom→top
+    textureAmount:  0.0,    // 0 = clean gradient, 1 = full FBM texture
+    noiseScale:     1.20,   // only meaningful while textureAmount > 0
+    speed:          0.15,
+    contrast:       1.05,
+    brightness:     1.00,
+    grain:          0.015,
+
+    // Arc fills (hard-edge gradients)
+    streakCount: 1,
+
+    s1color: '#3a1f12', s1y:  0.35, s1c:  0.28, s1t: 0.00, s1soft: 0.002, s1i: 1.00, s1falloff: 0.00, s1above: false,
+    s2color: '#ffd9a8', s2y: -0.10, s2c:  0.22, s2t: 0.00, s2soft: 0.005, s2i: 0.80, s2falloff: 0.00, s2above: true,
+    s3color: '#ffffff', s3y:  0.85, s3c: -0.15, s3t: 0.00, s3soft: 0.002, s3i: 0.50, s3falloff: 0.00, s3above: true,
+    s4color: '#ffffff', s4y: -0.40, s4c:  0.15, s4t: 0.00, s4soft: 0.002, s4i: 0.45, s4falloff: 0.00, s4above: true,
+};
+
+const uniforms = {
+    uTime:           { value: 0 },
+    uResolution:     { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
+    uColor1:         { value: new THREE.Color(params.color1) },
+    uColor2:         { value: new THREE.Color(params.color2) },
+    uColor3:         { value: new THREE.Color(params.color3) },
+    uColor4:         { value: new THREE.Color(params.color4) },
+    uGradAngle:      { value: params.gradAngle * Math.PI / 180 },
+    uTextureAmount:  { value: params.textureAmount },
+    uNoiseScale:     { value: params.noiseScale },
+    uSpeed:          { value: params.speed },
+    uGrain:          { value: params.grain },
+    uContrast:       { value: params.contrast },
+    uBrightness:     { value: params.brightness },
+    uStreakCount:    { value: params.streakCount },
+    uStreakA:        { value: [] },
+    uStreakB:        { value: [] },
+    uStreakColor:    { value: [] },
+};
+
+for (let i = 0; i < MAX_STREAKS; i++) {
+    uniforms.uStreakA.value.push(new THREE.Vector4(0, 0, 0, 0.005));
+    uniforms.uStreakB.value.push(new THREE.Vector4(1, 1, 0, 0));
+    uniforms.uStreakColor.value.push(new THREE.Vector3(1, 1, 1));
+}
+
+function syncStreaks() {
+    for (let i = 0; i < MAX_STREAKS; i++) {
+        const n = i + 1;
+        uniforms.uStreakA.value[i].set(
+            params[`s${n}y`],
+            params[`s${n}c`],
+            params[`s${n}t`],
+            params[`s${n}soft`],
+        );
+        uniforms.uStreakB.value[i].set(
+            params[`s${n}i`],
+            params[`s${n}above`] ? 1 : -1,
+            params[`s${n}falloff`],
+            0,
+        );
+        const c = new THREE.Color(params[`s${n}color`]);
+        uniforms.uStreakColor.value[i].set(c.r, c.g, c.b);
+    }
+}
+syncStreaks();
+
+const material = new THREE.ShaderMaterial({
+    vertexShader:   vertSrc,
+    fragmentShader: fragSrc,
+    uniforms,
+});
+scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material));
+
+// ─────────────────────────────────────────────
+// GUI
+// ─────────────────────────────────────────────
+const gui = new lil.GUI({ title: 'Shader Gradient' });
+
+const fColors = gui.addFolder('Gradient Colors');
+fColors.addColor(params, 'color1').name('Color 1').onChange(v => uniforms.uColor1.value.set(v));
+fColors.addColor(params, 'color2').name('Color 2').onChange(v => uniforms.uColor2.value.set(v));
+fColors.addColor(params, 'color3').name('Color 3').onChange(v => uniforms.uColor3.value.set(v));
+fColors.addColor(params, 'color4').name('Color 4').onChange(v => uniforms.uColor4.value.set(v));
+
+const fBg = gui.addFolder('Background');
+fBg.add(params, 'gradAngle', 0, 360, 1).name('Gradient Angle°')
+    .onChange(v => uniforms.uGradAngle.value = v * Math.PI / 180);
+fBg.add(params, 'textureAmount', 0, 1, 0.01).name('Texture Amount')
+    .onChange(v => uniforms.uTextureAmount.value = v);
+fBg.add(params, 'noiseScale', 0.1, 5, 0.05).name('Texture Scale')
+    .onChange(v => uniforms.uNoiseScale.value = v);
+fBg.add(params, 'speed', 0, 1, 0.005).name('Speed')
+    .onChange(v => uniforms.uSpeed.value = v);
+fBg.add(params, 'contrast', 0.4, 2, 0.01).name('Contrast')
+    .onChange(v => uniforms.uContrast.value = v);
+fBg.add(params, 'brightness', 0.4, 1.6, 0.01).name('Brightness')
+    .onChange(v => uniforms.uBrightness.value = v);
+fBg.add(params, 'grain', 0, 0.2, 0.005).name('Grain')
+    .onChange(v => uniforms.uGrain.value = v);
+
+const fS = gui.addFolder('Arcs');
+fS.add(params, 'streakCount', 0, MAX_STREAKS, 1).name('Arc Count')
+    .onChange(v => uniforms.uStreakCount.value = v);
+
+for (let n = 1; n <= MAX_STREAKS; n++) {
+    const fa = fS.addFolder(`Arc ${n}`);
+    fa.addColor(params, `s${n}color`).name('Color').onChange(syncStreaks);
+    fa.add(params, `s${n}y`,    -0.5, 1.5,  0.005).name('Y Center').onChange(syncStreaks);
+    fa.add(params, `s${n}c`,    -1.0, 1.0,  0.005).name('Curvature').onChange(syncStreaks);
+    fa.add(params, `s${n}t`,    -1.0, 1.0,  0.005).name('Tilt').onChange(syncStreaks);
+    fa.add(params, `s${n}soft`,  0.0005, 0.25, 0.0005).name('Edge Softness').onChange(syncStreaks);
+    fa.add(params, `s${n}i`,        0, 1, 0.01).name('Intensity').onChange(syncStreaks);
+    fa.add(params, `s${n}falloff`,  0, 1, 0.01).name('Falloff').onChange(syncStreaks);
+    fa.add(params, `s${n}above`).name('Fill Above').onChange(syncStreaks);
+    if (n > 1) fa.close();
+}
+fS.open();
+
+// ─────────────────────────────────────────────
+// Settings export / import
+// ─────────────────────────────────────────────
+function applyAllParams() {
+    uniforms.uColor1.value.set(params.color1);
+    uniforms.uColor2.value.set(params.color2);
+    uniforms.uColor3.value.set(params.color3);
+    uniforms.uColor4.value.set(params.color4);
+    uniforms.uGradAngle.value = params.gradAngle * Math.PI / 180;
+    uniforms.uTextureAmount.value = params.textureAmount;
+    uniforms.uNoiseScale.value = params.noiseScale;
+    uniforms.uSpeed.value = params.speed;
+    uniforms.uContrast.value = params.contrast;
+    uniforms.uBrightness.value = params.brightness;
+    uniforms.uGrain.value = params.grain;
+    uniforms.uStreakCount.value = params.streakCount;
+    syncStreaks();
+    gui.controllersRecursive().forEach(c => c.updateDisplay());
+}
+
+const settingsIO = {
+    copy: async () => {
+        try {
+            await navigator.clipboard.writeText(JSON.stringify(params, null, 2));
+            console.log('Settings copied');
+        } catch (e) { console.warn(e); }
+    },
+    paste: async () => {
+        try {
+            const txt = await navigator.clipboard.readText();
+            const obj = JSON.parse(txt);
+            Object.assign(params, obj);
+            applyAllParams();
+        } catch (e) { console.warn(e); }
+    },
+};
+const fIO = gui.addFolder('Settings');
+fIO.add(settingsIO, 'copy').name('Copy to clipboard');
+fIO.add(settingsIO, 'paste').name('Paste from clipboard');
+fIO.close();
+
+// ─────────────────────────────────────────────
+// Resize + render loop
+// ─────────────────────────────────────────────
+window.addEventListener('resize', () => {
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
+});
+
+const clock = new THREE.Clock();
+function animate() {
+    uniforms.uTime.value = clock.getElapsedTime();
+    renderer.render(scene, camera);
+    requestAnimationFrame(animate);
+}
+animate();
+</script>
+</body>
+</html>
