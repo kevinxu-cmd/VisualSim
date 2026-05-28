@@ -57,6 +57,8 @@ uniform float uNoiseScale;
 uniform float uNoiseAmount;    // 0 = pure vertical ramp, 1 = pure FBM
 uniform float uHueJitter;
 uniform float uTopBoost;       // top-row bias toward palette[3]
+uniform float uTopNarrow;      // 0 = uniform width, 1 = top fully tapered
+uniform float uTopPower;       // shape of the top-tapering envelope
 uniform float uSeed;
 uniform float uTimeScale;
 
@@ -117,11 +119,7 @@ void main() {
 
     vec2 cellUv = fract(vec2(luv.x * uCols, luv.y * uRows));
 
-    // Inter-cell black gaps create the pixel look
-    if (cellUv.x < uColGap || cellUv.x > 1.0 - uColGap) {
-        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
-        return;
-    }
+    // Row gap is uniform across the column
     if (cellUv.y < uRowGap || cellUv.y > 1.0 - uRowGap) {
         gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
         return;
@@ -139,6 +137,18 @@ void main() {
 
     // Normalized vertical position within the active region of this column
     float vPos = (cy + 0.5) / max(filledCount, 1.0);
+
+    // Column gap grows toward the top of the column so the bar tapers like a
+    // pixel-art tip. vPos drives the falloff; uTopPower shapes it (1=linear,
+    // higher=only the top cells narrow).
+    float topFade = pow(clamp(vPos, 0.0, 1.0), max(uTopPower, 0.001));
+    float widthFactor = 1.0 - clamp(uTopNarrow, 0.0, 1.0) * topFade;
+    float effGap = 0.5 - (0.5 - uColGap) * widthFactor;
+
+    if (cellUv.x < effGap || cellUv.x > 1.0 - effGap) {
+        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
 
     // FBM-driven color noise (animated when uTimeScale > 0)
     vec2 ncoord = vec2(cx, cy) * uNoiseScale + uSeed + vec2(uTime * uTimeScale, 0.0);
@@ -215,6 +225,9 @@ const params = {
     hueJitter:   0.18,
     topBoost:    0.10,
 
+    topNarrow:   0.55,
+    topPower:    4.00,
+
     animateColors:  false,
     animateHeights: false,
     timeScale:      0.10,
@@ -237,6 +250,8 @@ const uniforms = {
     uNoiseAmount: { value: params.noiseAmount },
     uHueJitter:   { value: params.hueJitter },
     uTopBoost:    { value: params.topBoost },
+    uTopNarrow:   { value: params.topNarrow },
+    uTopPower:    { value: params.topPower },
     uSeed:        { value: params.heightSeed },
     uTimeScale:   { value: 0 },
     uHeightsTex:  { value: heightsTex },
@@ -327,6 +342,7 @@ const TEMPLATES = {
         heightBase: 0.32, heightVariance: 0.65, heightTrend: 0.00,
         freqScale: 5.0, heightSeed: 1.30,
         noiseScale: 0.35, noiseAmount: 0.50, hueJitter: 0.18, topBoost: 0.10,
+        topNarrow: 0.55, topPower: 4.00,
     },
     slope: {
         template: 'slope',
@@ -336,6 +352,7 @@ const TEMPLATES = {
         heightBase: 0.18, heightVariance: 0.55, heightTrend: 0.00,
         freqScale: 8.0, heightSeed: 4.70,
         noiseScale: 0.30, noiseAmount: 0.28, hueJitter: 0.08, topBoost: 0.35,
+        topNarrow: 0.50, topPower: 4.50,
     },
 };
 
@@ -359,6 +376,8 @@ function applyAllParams() {
     uniforms.uNoiseAmount.value = params.noiseAmount;
     uniforms.uHueJitter.value   = params.hueJitter;
     uniforms.uTopBoost.value    = params.topBoost;
+    uniforms.uTopNarrow.value   = params.topNarrow;
+    uniforms.uTopPower.value    = params.topPower;
     uniforms.uSeed.value        = params.heightSeed;
     uniforms.uTimeScale.value   = params.animateColors ? params.timeScale : 0;
     updateVisualBounds();
@@ -388,6 +407,8 @@ fG.add(params, 'cols',   8, MAX_COLS, 1).name('Columns').onChange(v => { uniform
 fG.add(params, 'rows',   8, 80,       1).name('Rows').onChange(v => uniforms.uRows.value = v);
 fG.add(params, 'colGap', 0, 0.45, 0.005).name('Column Gap').onChange(v => uniforms.uColGap.value = v);
 fG.add(params, 'rowGap', 0, 0.45, 0.005).name('Row Gap').onChange(v => uniforms.uRowGap.value = v);
+fG.add(params, 'topNarrow', 0, 1, 0.005).name('Top Narrowing').onChange(v => uniforms.uTopNarrow.value = v);
+fG.add(params, 'topPower',  0.5, 8, 0.05).name('Top Falloff').onChange(v => uniforms.uTopPower.value = v);
 
 const fE = gui.addFolder('Layout');
 fE.add(params, 'visualWidth',   0.10, 1.0, 0.005).name('Width').onChange(updateVisualBounds);
