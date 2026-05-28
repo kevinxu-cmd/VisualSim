@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Pixel Bars</title>
+<style>
+    html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #000; font-family: monospace; }
+    canvas { display: block; }
+</style>
+</head>
+<body>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19"></script>
+<script>
+// ─────────────────────────────────────────────
+// Pixel Bars — pixel-art bar visualizer. The frame is split into a grid
+// of cells. Each column has a height (number of filled cells from the
+// bottom). Each filled cell picks a color from the 4-stop palette by
+// blending the cell's vertical position with FBM noise.
+//
+// Two preset templates:
+//   • Wave  — wide spectrum with bumpy heights across the full width
+//   • Slope — narrower mountain shape rising left→right with a peak
+// ─────────────────────────────────────────────
+
+const MAX_COLS = 128;
+
+const vertSrc = `
+varying vec2 vUv;
+void main() {
+    vUv = uv;
+    gl_Position = vec4(position, 1.0);
+}
+`;
+
+const fragSrc = `
+precision highp float;
+varying vec2 vUv;
+
+uniform vec2  uResolution;
+uniform float uTime;
+
+uniform vec3  uColor1;
+uniform vec3  uColor2;
+uniform vec3  uColor3;
+uniform vec3  uColor4;
+
+uniform float uCols;
+uniform float uRows;
+uniform float uColGap;
+uniform float uRowGap;
+
+uniform vec2  uXBounds;        // (xMin, xMax) in viewport UV
+uniform float uYMax;           // visual extends from uv.y=0 (bottom) to uYMax
+
+uniform float uNoiseScale;
+uniform float uNoiseAmount;    // 0 = pure vertical ramp, 1 = pure FBM
+uniform float uHueJitter;
+uniform float uTopBoost;       // top-row bias toward palette[3]
+uniform float uSeed;
+uniform float uTimeScale;
+
+uniform sampler2D uHeightsTex; // 1D N×1, R = column height in [0,1]
+
+float hash21(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+float vnoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(
+        mix(hash21(i),                  hash21(i + vec2(1.0, 0.0)), u.x),
+        mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), u.x),
+        u.y);
+}
+float fbm(vec2 p) {
+    float v = 0.0;
+    float a = 0.5;
+    for (int k = 0; k < 4; k++) {
+        v += a * vnoise(p);
+        p *= 2.03;
+        a *= 0.5;
+    }
+    return v;
+}
+
+vec3 palette4(float t) {
+    t = clamp(t, 0.0, 1.0);
+    if (t < 1.0/3.0)      return mix(uColor1, uColor2, t * 3.0);
+    else if (t < 2.0/3.0) return mix(uColor2, uColor3, (t - 1.0/3.0) * 3.0);
+    else                  return mix(uColor3, uColor4, (t - 2.0/3.0) * 3.0);
+}
+
+void main() {
+    vec2 uv = vUv;
+
+    // Outside the visual bounds → background
+    if (uv.x < uXBounds.x || uv.x > uXBounds.y || uv.y > uYMax) {
+        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
+
+    // Visual-local UV ∈ [0,1] within the active region
+    vec2 luv = vec2(
+        (uv.x - uXBounds.x) / max(uXBounds.y - uXBounds.x, 1e-4),
+        uv.y / max(uYMax, 1e-4)
+    );
+
+    float cx = floor(luv.x * uCols);
+    float cy = floor(luv.y * uRows);
+
+    if (cx < 0.0 || cx >= uCols || cy < 0.0 || cy >= uRows) {
+        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
+
+    vec2 cellUv = fract(vec2(luv.x * uCols, luv.y * uRows));
+
+    // Inter-cell black gaps create the pixel look
+    if (cellUv.x < uColGap || cellUv.x > 1.0 - uColGap) {
+        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
+    if (cellUv.y < uRowGap || cellUv.y > 1.0 - uRowGap) {
+        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
+
+    // Column height from texture → integer number of filled cells
+    float colU = (cx + 0.5) / ${MAX_COLS}.0;
+    float h = texture2D(uHeightsTex, vec2(colU, 0.5)).r;
+    float filledCount = floor(h * uRows + 0.5);
+
+    if (cy + 0.5 > filledCount) {
+        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
+
+    // Normalized vertical position within the active region of this column
+    float vPos = (cy + 0.5) / max(filledCount, 1.0);
+
+    // FBM-driven color noise (animated when uTimeScale > 0)
+    vec2 ncoord = vec2(cx, cy) * uNoiseScale + uSeed + vec2(uTime * uTimeScale, 0.0);
+    float n = fbm(ncoord);
+
+    // Blend vertical ramp and noise to get the palette parameter t
+    float t = mix(vPos, n, clamp(uNoiseAmount, 0.0, 1.0));
+
+    // Per-cell jitter so neighbors don't look identical
+    float j = (hash21(vec2(cx, cy) + uSeed * 7.31) - 0.5) * uHueJitter;
+    t = clamp(t + j, 0.0, 1.0);
+
+    vec3 col = palette4(t);
+
+    // Smooth bias of the top ~2 rows toward the lightest palette color
+    float topProx = clamp((cy - filledCount + 3.0) / 2.0, 0.0, 1.0);
+    col = mix(col, uColor4, topProx * uTopBoost);
+
+    gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+// ─────────────────────────────────────────────
+// Renderer / scene
+// ─────────────────────────────────────────────
+const renderer = new THREE.WebGLRenderer({ antialias: false });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+document.body.appendChild(renderer.domElement);
+
+const scene  = new THREE.Scene();
+const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
+// Heights texture (1D RGBA, R = height byte)
+const heightsBytes = new Uint8Array(MAX_COLS * 4);
+const heightsTex = new THREE.DataTexture(
+    heightsBytes, MAX_COLS, 1,
+    THREE.RGBAFormat, THREE.UnsignedByteType
+);
+heightsTex.minFilter = THREE.NearestFilter;
+heightsTex.magFilter = THREE.NearestFilter;
+heightsTex.wrapS = THREE.ClampToEdgeWrapping;
+heightsTex.wrapT = THREE.ClampToEdgeWrapping;
+heightsTex.needsUpdate = true;
+
+// ─────────────────────────────────────────────
+// Parameters (defaults match the Wave template)
+// ─────────────────────────────────────────────
+const params = {
+    template: 'wave',
+
+    color1: '#0a1a36',
+    color2: '#1f5a9c',
+    color3: '#6ed8e8',
+    color4: '#ffffff',
+
+    cols:    42,
+    rows:    34,
+    colGap:  0.08,
+    rowGap:  0.10,
+
+    visualWidth:   1.00,
+    visualXCenter: 0.50,
+    visualHeight:  1.00,
+
+    heightBase:     0.32,
+    heightVariance: 0.65,
+    heightTrend:    0.00,
+    freqScale:      5.00,
+    heightSeed:     1.30,
+
+    noiseScale:  0.35,
+    noiseAmount: 0.50,
+    hueJitter:   0.18,
+    topBoost:    0.10,
+
+    animateColors:  false,
+    animateHeights: false,
+    timeScale:      0.10,
+};
+
+const uniforms = {
+    uTime:        { value: 0 },
+    uResolution:  { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
+    uColor1:      { value: new THREE.Color(params.color1) },
+    uColor2:      { value: new THREE.Color(params.color2) },
+    uColor3:      { value: new THREE.Color(params.color3) },
+    uColor4:      { value: new THREE.Color(params.color4) },
+    uCols:        { value: params.cols },
+    uRows:        { value: params.rows },
+    uColGap:      { value: params.colGap },
+    uRowGap:      { value: params.rowGap },
+    uXBounds:     { value: new THREE.Vector2(0, 1) },
+    uYMax:        { value: 1.0 },
+    uNoiseScale:  { value: params.noiseScale },
+    uNoiseAmount: { value: params.noiseAmount },
+    uHueJitter:   { value: params.hueJitter },
+    uTopBoost:    { value: params.topBoost },
+    uSeed:        { value: params.heightSeed },
+    uTimeScale:   { value: 0 },
+    uHeightsTex:  { value: heightsTex },
+};
+
+const material = new THREE.ShaderMaterial({
+    vertexShader:   vertSrc,
+    fragmentShader: fragSrc,
+    uniforms,
+});
+scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material));
+
+// ─────────────────────────────────────────────
+// Deterministic 1D FBM on the JS side, used to build the height field
+// ─────────────────────────────────────────────
+function hash1d(x) {
+    return ((Math.sin(x * 127.1 + 311.7) * 43758.5453) % 1 + 1) % 1;
+}
+function pseudoNoise(x) {
+    const i = Math.floor(x);
+    const f = x - i;
+    const u = f * f * (3 - 2 * f);
+    return hash1d(i) * (1 - u) + hash1d(i + 1) * u;
+}
+function pseudoFbm(x, seed) {
+    let v = 0, a = 0.5, p = x + seed;
+    for (let k = 0; k < 4; k++) {
+        v += a * pseudoNoise(p + k * 17.31);
+        p *= 2.02;
+        a *= 0.5;
+    }
+    return v;
+}
+
+function generateHeights() {
+    const cols = Math.floor(params.cols);
+
+    for (let i = 0; i < MAX_COLS; i++) {
+        let h = 0;
+        if (i < cols) {
+            const x = cols > 1 ? i / (cols - 1) : 0.5;
+            const n = pseudoFbm(x * params.freqScale, params.heightSeed);
+
+            if (params.template === 'slope') {
+                const ramp = Math.pow(x, 1.3);
+                const peak = Math.exp(-Math.pow((x - 0.62) * 2.6, 2)) * 0.18;
+                h = params.heightBase + ramp * params.heightVariance + peak + (n - 0.5) * 0.30;
+            } else {
+                // 'wave' and any future template default to pure FBM heights
+                h = params.heightBase + n * params.heightVariance;
+            }
+
+            h += (x - 0.5) * params.heightTrend;
+            h = Math.max(0.02, Math.min(1.0, h));
+        }
+
+        const byte = Math.round(h * 255);
+        heightsBytes[i * 4 + 0] = byte;
+        heightsBytes[i * 4 + 1] = byte;
+        heightsBytes[i * 4 + 2] = byte;
+        heightsBytes[i * 4 + 3] = 255;
+    }
+
+    heightsTex.needsUpdate = true;
+}
+
+function updateVisualBounds() {
+    const w  = params.visualWidth;
+    const xc = params.visualXCenter;
+    const xMin = Math.max(0, xc - w / 2);
+    const xMax = Math.min(1, xc + w / 2);
+    uniforms.uXBounds.value.set(xMin, xMax);
+    uniforms.uYMax.value = params.visualHeight;
+}
+
+generateHeights();
+updateVisualBounds();
+
+// ─────────────────────────────────────────────
+// Templates
+// ─────────────────────────────────────────────
+const TEMPLATES = {
+    wave: {
+        template: 'wave',
+        color1: '#0a1a36', color2: '#1f5a9c', color3: '#6ed8e8', color4: '#ffffff',
+        cols: 42, rows: 34, colGap: 0.08, rowGap: 0.10,
+        visualWidth: 1.00, visualXCenter: 0.50, visualHeight: 1.00,
+        heightBase: 0.32, heightVariance: 0.65, heightTrend: 0.00,
+        freqScale: 5.0, heightSeed: 1.30,
+        noiseScale: 0.35, noiseAmount: 0.50, hueJitter: 0.18, topBoost: 0.10,
+    },
+    slope: {
+        template: 'slope',
+        color1: '#070d22', color2: '#0e3a78', color3: '#3ea0e0', color4: '#f6fbff',
+        cols: 24, rows: 24, colGap: 0.10, rowGap: 0.12,
+        visualWidth: 0.58, visualXCenter: 0.56, visualHeight: 0.80,
+        heightBase: 0.18, heightVariance: 0.55, heightTrend: 0.00,
+        freqScale: 8.0, heightSeed: 4.70,
+        noiseScale: 0.30, noiseAmount: 0.28, hueJitter: 0.08, topBoost: 0.35,
+    },
+};
+
+function applyTemplate(name) {
+    const t = TEMPLATES[name];
+    if (!t) return;
+    Object.assign(params, t);
+    applyAllParams();
+}
+
+function applyAllParams() {
+    uniforms.uColor1.value.set(params.color1);
+    uniforms.uColor2.value.set(params.color2);
+    uniforms.uColor3.value.set(params.color3);
+    uniforms.uColor4.value.set(params.color4);
+    uniforms.uCols.value        = params.cols;
+    uniforms.uRows.value        = params.rows;
+    uniforms.uColGap.value      = params.colGap;
+    uniforms.uRowGap.value      = params.rowGap;
+    uniforms.uNoiseScale.value  = params.noiseScale;
+    uniforms.uNoiseAmount.value = params.noiseAmount;
+    uniforms.uHueJitter.value   = params.hueJitter;
+    uniforms.uTopBoost.value    = params.topBoost;
+    uniforms.uSeed.value        = params.heightSeed;
+    uniforms.uTimeScale.value   = params.animateColors ? params.timeScale : 0;
+    updateVisualBounds();
+    generateHeights();
+    if (typeof gui !== 'undefined' && gui) {
+        gui.controllersRecursive().forEach(c => c.updateDisplay());
+    }
+}
+
+// ─────────────────────────────────────────────
+// GUI
+// ─────────────────────────────────────────────
+const gui = new lil.GUI({ title: 'Pixel Bars' });
+
+const fT = gui.addFolder('Template');
+fT.add({ wave:  () => applyTemplate('wave')  }, 'wave').name('Apply: Wave (spectrum)');
+fT.add({ slope: () => applyTemplate('slope') }, 'slope').name('Apply: Slope (mountain)');
+
+const fC = gui.addFolder('Palette');
+fC.addColor(params, 'color1').name('Color 1 (darkest)').onChange(v => uniforms.uColor1.value.set(v));
+fC.addColor(params, 'color2').name('Color 2').onChange(v => uniforms.uColor2.value.set(v));
+fC.addColor(params, 'color3').name('Color 3').onChange(v => uniforms.uColor3.value.set(v));
+fC.addColor(params, 'color4').name('Color 4 (lightest)').onChange(v => uniforms.uColor4.value.set(v));
+
+const fG = gui.addFolder('Grid');
+fG.add(params, 'cols',   8, MAX_COLS, 1).name('Columns').onChange(v => { uniforms.uCols.value = v; generateHeights(); });
+fG.add(params, 'rows',   8, 80,       1).name('Rows').onChange(v => uniforms.uRows.value = v);
+fG.add(params, 'colGap', 0, 0.45, 0.005).name('Column Gap').onChange(v => uniforms.uColGap.value = v);
+fG.add(params, 'rowGap', 0, 0.45, 0.005).name('Row Gap').onChange(v => uniforms.uRowGap.value = v);
+
+const fE = gui.addFolder('Layout');
+fE.add(params, 'visualWidth',   0.10, 1.0, 0.005).name('Width').onChange(updateVisualBounds);
+fE.add(params, 'visualXCenter', 0.00, 1.0, 0.005).name('X Center').onChange(updateVisualBounds);
+fE.add(params, 'visualHeight',  0.10, 1.0, 0.005).name('Height').onChange(updateVisualBounds);
+
+const fH = gui.addFolder('Heights');
+fH.add(params, 'heightBase',     0,    1, 0.005).name('Base').onChange(generateHeights);
+fH.add(params, 'heightVariance', 0,    1, 0.005).name('Variance').onChange(generateHeights);
+fH.add(params, 'heightTrend',   -1,    1, 0.005).name('Trend L→R').onChange(generateHeights);
+fH.add(params, 'freqScale',    0.5,   20, 0.1  ).name('Bumpiness').onChange(generateHeights);
+fH.add(params, 'heightSeed',     0,  100, 0.01 ).name('Seed').onChange(v => { uniforms.uSeed.value = v; generateHeights(); });
+fH.add({ reroll: () => {
+    params.heightSeed = Math.random() * 100;
+    uniforms.uSeed.value = params.heightSeed;
+    generateHeights();
+    gui.controllersRecursive().forEach(c => c.updateDisplay());
+} }, 'reroll').name('Re-roll seed');
+
+const fM = gui.addFolder('Color Mix');
+fM.add(params, 'noiseScale',  0.05,  2,  0.01 ).name('Noise Scale').onChange(v => uniforms.uNoiseScale.value = v);
+fM.add(params, 'noiseAmount',    0,  1,  0.005).name('Noise vs Ramp').onChange(v => uniforms.uNoiseAmount.value = v);
+fM.add(params, 'hueJitter',      0, 0.5, 0.005).name('Per-Cell Jitter').onChange(v => uniforms.uHueJitter.value = v);
+fM.add(params, 'topBoost',       0,  1,  0.01 ).name('Top Highlight').onChange(v => uniforms.uTopBoost.value = v);
+
+const fA = gui.addFolder('Animation');
+fA.add(params, 'animateColors').name('Animate Colors').onChange(v => uniforms.uTimeScale.value = v ? params.timeScale : 0);
+fA.add(params, 'animateHeights').name('Animate Heights');
+fA.add(params, 'timeScale', 0, 1, 0.005).name('Speed').onChange(v => { if (params.animateColors) uniforms.uTimeScale.value = v; });
+fA.close();
+
+const settingsIO = {
+    copy: async () => {
+        try {
+            await navigator.clipboard.writeText(JSON.stringify(params, null, 2));
+            console.log('Settings copied');
+        } catch (e) { console.warn(e); }
+    },
+    paste: async () => {
+        try {
+            const txt = await navigator.clipboard.readText();
+            Object.assign(params, JSON.parse(txt));
+            applyAllParams();
+        } catch (e) { console.warn(e); }
+    },
+};
+const fIO = gui.addFolder('Settings');
+fIO.add(settingsIO, 'copy').name('Copy to clipboard');
+fIO.add(settingsIO, 'paste').name('Paste from clipboard');
+fIO.close();
+
+// ─────────────────────────────────────────────
+// Resize + render loop
+// ─────────────────────────────────────────────
+window.addEventListener('resize', () => {
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
+});
+
+const clock = new THREE.Clock();
+let lastHeightUpdate = 0;
+function animate() {
+    const t = clock.getElapsedTime();
+    uniforms.uTime.value = t;
+
+    if (params.animateHeights && t - lastHeightUpdate > 0.06) {
+        params.heightSeed += params.timeScale * 0.05;
+        uniforms.uSeed.value = params.heightSeed;
+        generateHeights();
+        lastHeightUpdate = t;
+    }
+
+    renderer.render(scene, camera);
+    requestAnimationFrame(animate);
+}
+animate();
+</script>
+</body>
+</html>
