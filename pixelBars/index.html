@@ -57,8 +57,8 @@ uniform float uNoiseScale;
 uniform float uNoiseAmount;    // 0 = pure vertical ramp, 1 = pure FBM
 uniform float uHueJitter;
 uniform float uTopBoost;       // top-row bias toward palette[3]
-uniform float uTopNarrow;      // 0 = uniform width, 1 = top fully tapered
-uniform float uTopPower;       // shape of the top-tapering envelope
+uniform float uTopNarrow;      // 0 = uniform width, 1 = topmost cell fully collapsed
+uniform float uTopRows;        // number of top cells affected by the taper
 uniform float uSeed;
 uniform float uTimeScale;
 
@@ -138,10 +138,11 @@ void main() {
     // Normalized vertical position within the active region of this column
     float vPos = (cy + 0.5) / max(filledCount, 1.0);
 
-    // Column gap grows toward the top of the column so the bar tapers like a
-    // pixel-art tip. vPos drives the falloff; uTopPower shapes it (1=linear,
-    // higher=only the top cells narrow).
-    float topFade = pow(clamp(vPos, 0.0, 1.0), max(uTopPower, 0.001));
+    // Only the top few cells of each column taper. Cells further down stay
+    // full width. uTopRows controls how many top cells are affected — e.g.
+    // 1 = just the topmost cell narrows, 3 = top 3 cells form a smooth tip.
+    float distFromTop = filledCount - 1.0 - cy;
+    float topFade = clamp(1.0 - distFromTop / max(uTopRows, 0.001), 0.0, 1.0);
     float widthFactor = 1.0 - clamp(uTopNarrow, 0.0, 1.0) * topFade;
     float effGap = 0.5 - (0.5 - uColGap) * widthFactor;
 
@@ -226,7 +227,7 @@ const params = {
     topBoost:    0.10,
 
     topNarrow:   0.55,
-    topPower:    4.00,
+    topRows:     2.50,
 
     animateColors:  false,
     animateHeights: false,
@@ -251,7 +252,7 @@ const uniforms = {
     uHueJitter:   { value: params.hueJitter },
     uTopBoost:    { value: params.topBoost },
     uTopNarrow:   { value: params.topNarrow },
-    uTopPower:    { value: params.topPower },
+    uTopRows:     { value: params.topRows },
     uSeed:        { value: params.heightSeed },
     uTimeScale:   { value: 0 },
     uHeightsTex:  { value: heightsTex },
@@ -342,7 +343,7 @@ const TEMPLATES = {
         heightBase: 0.32, heightVariance: 0.65, heightTrend: 0.00,
         freqScale: 5.0, heightSeed: 1.30,
         noiseScale: 0.35, noiseAmount: 0.50, hueJitter: 0.18, topBoost: 0.10,
-        topNarrow: 0.55, topPower: 4.00,
+        topNarrow: 0.55, topRows: 2.50,
     },
     slope: {
         template: 'slope',
@@ -352,7 +353,7 @@ const TEMPLATES = {
         heightBase: 0.18, heightVariance: 0.55, heightTrend: 0.00,
         freqScale: 8.0, heightSeed: 4.70,
         noiseScale: 0.30, noiseAmount: 0.28, hueJitter: 0.08, topBoost: 0.35,
-        topNarrow: 0.50, topPower: 4.50,
+        topNarrow: 0.55, topRows: 2.50,
     },
 };
 
@@ -377,7 +378,7 @@ function applyAllParams() {
     uniforms.uHueJitter.value   = params.hueJitter;
     uniforms.uTopBoost.value    = params.topBoost;
     uniforms.uTopNarrow.value   = params.topNarrow;
-    uniforms.uTopPower.value    = params.topPower;
+    uniforms.uTopRows.value     = params.topRows;
     uniforms.uSeed.value        = params.heightSeed;
     uniforms.uTimeScale.value   = params.animateColors ? params.timeScale : 0;
     updateVisualBounds();
@@ -408,7 +409,7 @@ fG.add(params, 'rows',   8, 80,       1).name('Rows').onChange(v => uniforms.uRo
 fG.add(params, 'colGap', 0, 0.45, 0.005).name('Column Gap').onChange(v => uniforms.uColGap.value = v);
 fG.add(params, 'rowGap', 0, 0.45, 0.005).name('Row Gap').onChange(v => uniforms.uRowGap.value = v);
 fG.add(params, 'topNarrow', 0, 1, 0.005).name('Top Narrowing').onChange(v => uniforms.uTopNarrow.value = v);
-fG.add(params, 'topPower',  0.5, 8, 0.05).name('Top Falloff').onChange(v => uniforms.uTopPower.value = v);
+fG.add(params, 'topRows',   1, 10, 0.1).name('Top Rows Affected').onChange(v => uniforms.uTopRows.value = v);
 
 const fE = gui.addFolder('Layout');
 fE.add(params, 'visualWidth',   0.10, 1.0, 0.005).name('Width').onChange(updateVisualBounds);
