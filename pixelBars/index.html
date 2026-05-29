@@ -57,16 +57,19 @@ uniform float uNoiseScale;
 uniform float uNoiseAmount;    // 0 = pure vertical ramp, 1 = pure FBM
 uniform float uHueJitter;
 uniform float uTopBoost;       // top-row bias toward palette[3]
+uniform float uTopBoostRows;   // how many top rows the highlight spans
 uniform float uTopNarrow;      // 0 = uniform width, 1 = topmost cell fully collapsed
 uniform float uTopRows;        // number of top cells affected by the taper
 uniform float uWidthJitter;    // 0 = all columns same width, 1 = edges can collapse
-uniform float uWidthJitterFalloff; // higher = jitter concentrated near visual edges
+uniform float uVertWidthVar;       // per-cell width wobble along the vertical axis
+uniform float uVertWidthScale;     // vertical frequency of the width wobble
 uniform vec3  uAccentColor;        // complementary pastel tint sprinkled over cells
 uniform float uAccentAmount;       // intensity of the accent tint per affected cell
 uniform float uAccentDensity;      // 0 = no cells tinted, 1 = ~most cells tinted
 uniform float uAccentEdgeBias;     // 0 = accents anywhere, 1 = accents only at edges
 uniform float uSeed;
 uniform float uTimeScale;
+uniform float uAccentTimeScale;    // drift speed of the accent field (0 = frozen)
 
 uniform sampler2D uHeightsTex; // 1D N×1, R = column height in [0,1]
 
@@ -154,11 +157,17 @@ void main() {
     // column gets a stable random thinning (same cx + seed → same jitter),
     // weighted by how close that column is to the left/right edge.
     float xn = (cx + 0.5) / uCols * 2.0 - 1.0;
-    float edgeProx = pow(clamp(abs(xn), 0.0, 1.0), max(uWidthJitterFalloff, 0.001));
+    float edgeProx = pow(clamp(abs(xn), 0.0, 1.0), 3.0); // jitter hugs the visual edges
     float colHash = fract(sin(cx * 31.71 + uSeed * 13.73) * 43758.5453);
     float colJitter = colHash * clamp(uWidthJitter, 0.0, 1.0) * edgeProx;
 
-    float widthFactor = (1.0 - clamp(uTopNarrow, 0.0, 1.0) * topFade) * (1.0 - colJitter);
+    // Per-cell width wobble along the vertical axis: each column's left/right
+    // edges pinch in and out as it rises, driven by FBM in cy (decorrelated
+    // per column via cx) so neighbours don't share the same profile.
+    float vertNoise = fbm(vec2(cx * 1.93 + uSeed * 3.1, cy * uVertWidthScale + uSeed * 0.7));
+    float vertThin = clamp(uVertWidthVar, 0.0, 1.0) * vertNoise;
+
+    float widthFactor = (1.0 - clamp(uTopNarrow, 0.0, 1.0) * topFade) * (1.0 - colJitter) * (1.0 - vertThin);
     float effGap = 0.5 - (0.5 - uColGap) * widthFactor;
 
     if (cellUv.x < effGap || cellUv.x > 1.0 - effGap) {
@@ -179,20 +188,23 @@ void main() {
 
     vec3 col = palette4(t);
 
-    // Smooth bias of the top ~2 rows toward the lightest palette color
-    float topProx = clamp((cy - filledCount + 3.0) / 2.0, 0.0, 1.0);
+    // Smooth bias of the top rows toward the lightest palette color. uTopBoostRows
+    // sets how many rows down from the tip the highlight reaches.
+    float topProx = clamp(1.0 - distFromTop / max(uTopBoostRows, 0.001), 0.0, 1.0);
     col = mix(col, uColor4, topProx * uTopBoost);
 
     // Pastel accent overlay — separate FBM field decides which cells get
     // tinted toward uAccentColor (default a soft warm pink that complements
     // a cool palette). Density sets how many cells qualify; edgeBias pulls
     // the accents toward the left/right ends of the visual.
-    vec2 acoord = vec2(cx, cy) * 0.55 + uSeed * 0.831 + 42.0;
+    vec2 acoord = vec2(cx, cy) * 0.55 + uSeed * 0.831 + 42.0
+                  + vec2(uTime * uAccentTimeScale * 0.6, uTime * uAccentTimeScale * 0.35);
     float aNoise = fbm(acoord);
     float thresh = mix(0.95, 0.35, clamp(uAccentDensity, 0.0, 1.0));
     float accentMask = smoothstep(thresh, thresh + 0.15, aNoise);
-    float aEdge = pow(clamp(abs(xn), 0.0, 1.0), 2.0);
-    float edgeWeight = mix(1.0, aEdge, clamp(uAccentEdgeBias, 0.0, 1.0));
+    float aEdge = pow(clamp(abs(xn), 0.0, 1.0), 2.0);   // near the left/right ends
+    float aTop  = pow(clamp(vPos, 0.0, 1.0), 2.0);      // near the top of each column
+    float edgeWeight = mix(1.0, max(aEdge, aTop), clamp(uAccentEdgeBias, 0.0, 1.0));
     col = mix(col, uAccentColor, accentMask * clamp(uAccentAmount, 0.0, 1.0) * edgeWeight);
 
     gl_FragColor = vec4(col, 1.0);
@@ -233,39 +245,44 @@ const params = {
     color3: '#6ed8e8',
     color4: '#ffffff',
 
-    cols:    42,
-    rows:    34,
-    colGap:  0.08,
-    rowGap:  0.10,
+    cols:    70,
+    rows:    25,
+    colGap:  0.04,
+    rowGap:  0.005,
 
     visualWidth:   1.00,
-    visualXCenter: 0.50,
+    visualXCenter: 0.29,
     visualHeight:  1.00,
 
-    heightBase:     0.32,
-    heightVariance: 0.65,
-    heightTrend:    0.00,
-    freqScale:      5.00,
-    heightSeed:     1.30,
+    heightBase:     0.135,
+    heightVariance: 0.67,
+    heightTrend:    0.235,
+    freqScale:      3.60,
+    heightSeed:     91.22077976852206,
 
-    noiseScale:  0.35,
-    noiseAmount: 0.50,
-    hueJitter:   0.18,
-    topBoost:    0.10,
+    noiseScale:  2.00,
+    noiseAmount: 0.365,
+    hueJitter:   0.085,
+    topBoost:    1.00,
+    topBoostRows: 4.00,
 
-    topNarrow:   0.55,
-    topRows:     2.50,
-    widthJitter: 0.45,
-    widthJitterFalloff: 2.50,
+    topNarrow:   0.48,
+    topRows:     2.00,
+    widthJitter: 0.00,
+    vertWidthVar:   0.86,
+    vertWidthScale: 0.56,
 
-    accentColor:    '#e8c0d0',
-    accentAmount:   0.55,
-    accentDensity:  0.30,
-    accentEdgeBias: 0.55,
+    accentColor:    '#f97bae',
+    accentHarmony:  'manual',
+    accentPastel:   1.00,
+    accentAmount:   0.565,
+    accentDensity:  0.82,
+    accentEdgeBias: 1.00,
 
-    animateColors:  false,
+    animateColors:  true,
+    animateAccents: true,
     animateHeights: false,
-    timeScale:      0.10,
+    timeScale:      1.00,
 };
 
 const uniforms = {
@@ -285,16 +302,19 @@ const uniforms = {
     uNoiseAmount: { value: params.noiseAmount },
     uHueJitter:   { value: params.hueJitter },
     uTopBoost:    { value: params.topBoost },
+    uTopBoostRows: { value: params.topBoostRows },
     uTopNarrow:   { value: params.topNarrow },
     uTopRows:     { value: params.topRows },
     uWidthJitter: { value: params.widthJitter },
-    uWidthJitterFalloff: { value: params.widthJitterFalloff },
+    uVertWidthVar:   { value: params.vertWidthVar },
+    uVertWidthScale: { value: params.vertWidthScale },
     uAccentColor:    { value: new THREE.Color(params.accentColor) },
     uAccentAmount:   { value: params.accentAmount },
     uAccentDensity:  { value: params.accentDensity },
     uAccentEdgeBias: { value: params.accentEdgeBias },
     uSeed:        { value: params.heightSeed },
-    uTimeScale:   { value: 0 },
+    uTimeScale:   { value: params.animateColors ? params.timeScale : 0 },
+    uAccentTimeScale: { value: params.animateAccents ? params.timeScale : 0 },
     uHeightsTex:  { value: heightsTex },
 };
 
@@ -378,14 +398,17 @@ const TEMPLATES = {
     wave: {
         template: 'wave',
         color1: '#0a1a36', color2: '#1f5a9c', color3: '#6ed8e8', color4: '#ffffff',
-        cols: 42, rows: 34, colGap: 0.08, rowGap: 0.10,
-        visualWidth: 1.00, visualXCenter: 0.50, visualHeight: 1.00,
-        heightBase: 0.32, heightVariance: 0.65, heightTrend: 0.00,
-        freqScale: 5.0, heightSeed: 1.30,
-        noiseScale: 0.35, noiseAmount: 0.50, hueJitter: 0.18, topBoost: 0.10,
-        topNarrow: 0.55, topRows: 2.50,
-        widthJitter: 0.50, widthJitterFalloff: 2.50,
-        accentColor: '#e8c0d0', accentAmount: 0.55, accentDensity: 0.30, accentEdgeBias: 0.55,
+        cols: 70, rows: 25, colGap: 0.04, rowGap: 0.005,
+        visualWidth: 1.00, visualXCenter: 0.29, visualHeight: 1.00,
+        heightBase: 0.135, heightVariance: 0.67, heightTrend: 0.235,
+        freqScale: 3.6, heightSeed: 91.22077976852206,
+        noiseScale: 2.0, noiseAmount: 0.365, hueJitter: 0.085, topBoost: 1.0, topBoostRows: 4.0,
+        topNarrow: 0.48, topRows: 2.0,
+        widthJitter: 0.0,
+        vertWidthVar: 0.86, vertWidthScale: 0.56,
+        accentColor: '#f97bae', accentHarmony: 'manual', accentPastel: 1.0,
+        accentAmount: 0.565, accentDensity: 0.82, accentEdgeBias: 1.0,
+        animateColors: true, animateAccents: true, animateHeights: false, timeScale: 1.0,
     },
     slope: {
         template: 'slope',
@@ -394,10 +417,12 @@ const TEMPLATES = {
         visualWidth: 0.58, visualXCenter: 0.56, visualHeight: 0.80,
         heightBase: 0.18, heightVariance: 0.55, heightTrend: 0.00,
         freqScale: 8.0, heightSeed: 4.70,
-        noiseScale: 0.30, noiseAmount: 0.28, hueJitter: 0.08, topBoost: 0.35,
+        noiseScale: 0.30, noiseAmount: 0.28, hueJitter: 0.08, topBoost: 0.35, topBoostRows: 3.0,
         topNarrow: 0.55, topRows: 2.50,
-        widthJitter: 0.30, widthJitterFalloff: 2.80,
-        accentColor: '#e8c0d0', accentAmount: 0.0, accentDensity: 0.0, accentEdgeBias: 0.50,
+        widthJitter: 0.30,
+        vertWidthVar: 0.35, vertWidthScale: 0.40,
+        accentColor: '#e8c0d0', accentHarmony: 'manual', accentPastel: 0.60,
+        accentAmount: 0.0, accentDensity: 0.0, accentEdgeBias: 0.50,
     },
 };
 
@@ -406,6 +431,38 @@ function applyTemplate(name) {
     if (!t) return;
     Object.assign(params, t);
     applyAllParams();
+}
+
+function refreshGui() {
+    if (typeof gui !== 'undefined' && gui) {
+        gui.controllersRecursive().forEach(c => c.updateDisplay());
+    }
+}
+
+// Derive the accent from the palette via a color-theory relationship. 'manual'
+// leaves the hand-picked accentColor alone; the other modes rotate the hue of
+// the mid palette color (color2) around the wheel and soften the result toward
+// a pastel. accentPastel = 0 keeps the anchor's own saturation/lightness, 1 is
+// fully pastel. For this cool-blue palette, 'triadic' lands on ~the soft pink.
+const HARMONY_SHIFT = {
+    complementary:        0.5,        // 180°
+    'split-complementary': 5 / 12,    // 150°
+    analogous:            1 / 12,     // 30°
+    triadic:              1 / 3,      // 120°
+};
+function deriveAccent() {
+    if (params.accentHarmony === 'manual') return;
+    const shift = HARMONY_SHIFT[params.accentHarmony] || 0;
+    const hsl = { h: 0, s: 0, l: 0 };
+    new THREE.Color(params.color2).getHSL(hsl);
+    const p = THREE.MathUtils.clamp(params.accentPastel, 0, 1);
+    const out = new THREE.Color().setHSL(
+        (hsl.h + shift) % 1.0,
+        THREE.MathUtils.lerp(hsl.s, 0.35, p),
+        THREE.MathUtils.lerp(hsl.l, 0.82, p)
+    );
+    params.accentColor = '#' + out.getHexString();
+    uniforms.uAccentColor.value.copy(out);
 }
 
 function applyAllParams() {
@@ -421,21 +478,23 @@ function applyAllParams() {
     uniforms.uNoiseAmount.value = params.noiseAmount;
     uniforms.uHueJitter.value   = params.hueJitter;
     uniforms.uTopBoost.value    = params.topBoost;
+    uniforms.uTopBoostRows.value = params.topBoostRows;
     uniforms.uTopNarrow.value   = params.topNarrow;
     uniforms.uTopRows.value     = params.topRows;
     uniforms.uWidthJitter.value = params.widthJitter;
-    uniforms.uWidthJitterFalloff.value = params.widthJitterFalloff;
+    uniforms.uVertWidthVar.value   = params.vertWidthVar;
+    uniforms.uVertWidthScale.value = params.vertWidthScale;
     uniforms.uAccentColor.value.set(params.accentColor);
     uniforms.uAccentAmount.value   = params.accentAmount;
     uniforms.uAccentDensity.value  = params.accentDensity;
     uniforms.uAccentEdgeBias.value = params.accentEdgeBias;
+    deriveAccent();
     uniforms.uSeed.value        = params.heightSeed;
     uniforms.uTimeScale.value   = params.animateColors ? params.timeScale : 0;
+    uniforms.uAccentTimeScale.value = params.animateAccents ? params.timeScale : 0;
     updateVisualBounds();
     generateHeights();
-    if (typeof gui !== 'undefined' && gui) {
-        gui.controllersRecursive().forEach(c => c.updateDisplay());
-    }
+    refreshGui();
 }
 
 // ─────────────────────────────────────────────
@@ -449,7 +508,7 @@ fT.add({ slope: () => applyTemplate('slope') }, 'slope').name('Apply: Slope (mou
 
 const fC = gui.addFolder('Palette');
 fC.addColor(params, 'color1').name('Color 1 (darkest)').onChange(v => uniforms.uColor1.value.set(v));
-fC.addColor(params, 'color2').name('Color 2').onChange(v => uniforms.uColor2.value.set(v));
+fC.addColor(params, 'color2').name('Color 2').onChange(v => { uniforms.uColor2.value.set(v); if (params.accentHarmony !== 'manual') { deriveAccent(); refreshGui(); } });
 fC.addColor(params, 'color3').name('Color 3').onChange(v => uniforms.uColor3.value.set(v));
 fC.addColor(params, 'color4').name('Color 4 (lightest)').onChange(v => uniforms.uColor4.value.set(v));
 
@@ -461,7 +520,8 @@ fG.add(params, 'rowGap', 0, 0.45, 0.005).name('Row Gap').onChange(v => uniforms.
 fG.add(params, 'topNarrow', 0, 1, 0.005).name('Top Narrowing').onChange(v => uniforms.uTopNarrow.value = v);
 fG.add(params, 'topRows',   1, 10, 0.1).name('Top Rows Affected').onChange(v => uniforms.uTopRows.value = v);
 fG.add(params, 'widthJitter', 0, 1, 0.005).name('Width Jitter (edges)').onChange(v => uniforms.uWidthJitter.value = v);
-fG.add(params, 'widthJitterFalloff', 0.5, 6, 0.05).name('Jitter Falloff').onChange(v => uniforms.uWidthJitterFalloff.value = v);
+fG.add(params, 'vertWidthVar', 0, 1, 0.005).name('Vertical Width Var').onChange(v => uniforms.uVertWidthVar.value = v);
+fG.add(params, 'vertWidthScale', 0.05, 2, 0.01).name('Vert Var Scale').onChange(v => uniforms.uVertWidthScale.value = v);
 
 const fE = gui.addFolder('Layout');
 fE.add(params, 'visualWidth',   0.10, 1.0, 0.005).name('Width').onChange(updateVisualBounds);
@@ -478,7 +538,7 @@ fH.add({ reroll: () => {
     params.heightSeed = Math.random() * 100;
     uniforms.uSeed.value = params.heightSeed;
     generateHeights();
-    gui.controllersRecursive().forEach(c => c.updateDisplay());
+    refreshGui();
 } }, 'reroll').name('Re-roll seed');
 
 const fM = gui.addFolder('Color Mix');
@@ -486,37 +546,77 @@ fM.add(params, 'noiseScale',  0.05,  2,  0.01 ).name('Noise Scale').onChange(v =
 fM.add(params, 'noiseAmount',    0,  1,  0.005).name('Noise vs Ramp').onChange(v => uniforms.uNoiseAmount.value = v);
 fM.add(params, 'hueJitter',      0, 0.5, 0.005).name('Per-Cell Jitter').onChange(v => uniforms.uHueJitter.value = v);
 fM.add(params, 'topBoost',       0,  1,  0.01 ).name('Top Highlight').onChange(v => uniforms.uTopBoost.value = v);
+fM.add(params, 'topBoostRows',   1, 12,  0.1  ).name('Top Highlight Spread').onChange(v => uniforms.uTopBoostRows.value = v);
 
 const fAc = gui.addFolder('Accent (complementary)');
-fAc.addColor(params, 'accentColor').name('Accent Color').onChange(v => uniforms.uAccentColor.value.set(v));
+fAc.add(params, 'accentHarmony', {
+    'Manual (pick below)': 'manual',
+    'Complementary':       'complementary',
+    'Split-Complementary': 'split-complementary',
+    'Analogous':           'analogous',
+    'Triadic':             'triadic',
+}).name('Harmony').onChange(() => { deriveAccent(); refreshGui(); });
+fAc.add(params, 'accentPastel', 0, 1, 0.005).name('Pastel Softness')
+    .onChange(() => { if (params.accentHarmony !== 'manual') { deriveAccent(); refreshGui(); } });
+fAc.addColor(params, 'accentColor').name('Accent Color')
+    .onChange(v => { params.accentHarmony = 'manual'; uniforms.uAccentColor.value.set(v); refreshGui(); });
 fAc.add(params, 'accentAmount',   0, 1, 0.005).name('Strength').onChange(v => uniforms.uAccentAmount.value = v);
 fAc.add(params, 'accentDensity',  0, 1, 0.005).name('Density').onChange(v => uniforms.uAccentDensity.value = v);
 fAc.add(params, 'accentEdgeBias', 0, 1, 0.005).name('Edge Bias').onChange(v => uniforms.uAccentEdgeBias.value = v);
 
 const fA = gui.addFolder('Animation');
 fA.add(params, 'animateColors').name('Animate Colors').onChange(v => uniforms.uTimeScale.value = v ? params.timeScale : 0);
+fA.add(params, 'animateAccents').name('Animate Accents').onChange(v => uniforms.uAccentTimeScale.value = v ? params.timeScale : 0);
 fA.add(params, 'animateHeights').name('Animate Heights');
-fA.add(params, 'timeScale', 0, 1, 0.005).name('Speed').onChange(v => { if (params.animateColors) uniforms.uTimeScale.value = v; });
+fA.add(params, 'timeScale', 0, 1, 0.005).name('Speed').onChange(v => {
+  if (params.animateColors) uniforms.uTimeScale.value = v;
+  if (params.animateAccents) uniforms.uAccentTimeScale.value = v;
+});
 fA.close();
+
+// The async Clipboard API (navigator.clipboard) is permission-denied inside
+// embedded preview webviews and some browsers, and document.execCommand('copy')
+// is blocked there too. So each action tries the clean clipboard path first,
+// then falls back to a native prompt() dialog — copying/pasting in a system
+// dialog is a user action that doesn't need the page's clipboard permission.
+// Button labels flash feedback so the result is never silent.
+let copyCtrl, pasteCtrl;
+function flashCtrl(ctrl, msg, baseName) {
+    if (!ctrl) return;
+    ctrl.name(msg);
+    setTimeout(() => ctrl.name(baseName), 1500);
+}
 
 const settingsIO = {
     copy: async () => {
+        const json = JSON.stringify(params);
         try {
-            await navigator.clipboard.writeText(JSON.stringify(params, null, 2));
-            console.log('Settings copied');
-        } catch (e) { console.warn(e); }
+            await navigator.clipboard.writeText(json);
+            flashCtrl(copyCtrl, 'Copied ✓', 'Copy to clipboard');
+        } catch (e) {
+            console.log('Pixel Bars settings:', json);
+            window.prompt('Clipboard blocked here — copy this (Cmd/Ctrl+C):', json);
+            flashCtrl(copyCtrl, 'Copy from dialog', 'Copy to clipboard');
+        }
     },
     paste: async () => {
+        let txt = null;
+        try { txt = await navigator.clipboard.readText(); } catch (e) { txt = null; }
+        if (!txt) txt = window.prompt('Paste settings JSON (Cmd/Ctrl+V), then OK:', '');
+        if (!txt) return;
         try {
-            const txt = await navigator.clipboard.readText();
             Object.assign(params, JSON.parse(txt));
             applyAllParams();
-        } catch (e) { console.warn(e); }
+            flashCtrl(pasteCtrl, 'Loaded ✓', 'Paste from clipboard');
+        } catch (e) {
+            console.warn('Paste failed:', e);
+            flashCtrl(pasteCtrl, 'Invalid JSON ✗', 'Paste from clipboard');
+        }
     },
 };
 const fIO = gui.addFolder('Settings');
-fIO.add(settingsIO, 'copy').name('Copy to clipboard');
-fIO.add(settingsIO, 'paste').name('Paste from clipboard');
+copyCtrl  = fIO.add(settingsIO, 'copy').name('Copy to clipboard');
+pasteCtrl = fIO.add(settingsIO, 'paste').name('Paste from clipboard');
 fIO.close();
 
 // ─────────────────────────────────────────────
