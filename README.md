@@ -7,5 +7,10 @@ Collection of Visual Simulators to make visuals.
 <img width="1450" height="870" alt="Screenshot 2026-05-11 at 12 59 45 PM" src="https://github.com/user-attachments/assets/69a33261-05ff-4ff5-a040-3a843bd381a1" />
 <img width="2938" height="1744" alt="image" src="https://github.com/user-attachments/assets/f75c45a4-6690-4f0f-8825-c5485e53d509" />
 <img width="2938" height="1744" alt="image" src="https://github.com/user-attachments/assets/102499f5-e176-4b21-82dd-99c478cf23aa" />
+<img width="2938" height="1744" alt="image" src="https://github.com/user-attachments/assets/6efcf876-fb52-43cd-aad2-0c1ffc041fec" />
+
 
 {"template":"wave","color1":"#0a1a36","color2":"#1f5a9c","color3":"#6ed8e8","color4":"#ffffff","cols":70,"rows":25,"colGap":0.025,"rowGap":0,"visualWidth":1,"visualXCenter":0.49,"visualHeight":0.875,"heightBase":0.135,"heightVariance":0.77,"heightTrend":0.26,"freqScale":3.6,"heightSeed":91.22077976852206,"noiseScale":0.71,"noiseAmount":0.4,"hueJitter":0.135,"topBoost":1,"topBoostRows":4.3,"topNarrow":0.605,"topRows":3.1,"widthJitter":0.635,"vertWidthVar":0.86,"vertWidthScale":2,"accentColor":"#f97bae","accentHarmony":"manual","accentPastel":0.67,"accentAmount":0.935,"accentDensity":0.63,"accentEdgeBias":0.91,"animateColors":true,"animateAccents":true,"animateHeights":false,"timeScale":0.645}
+
+{"template":"wave","color1":"#750000","color2":"#ff6a00","color3":"#ffb455","color4":"#ffffff","cols":70,"rows":25,"colGap":0.025,"rowGap":0,"visualWidth":1,"visualXCenter":0.49,"visualHeight":0.875,"heightBase":0.135,"heightVariance":0.77,"heightTrend":0.26,"freqScale":3.6,"heightSeed":91.22077976852206,"noiseScale":0.71,"noiseAmount":0.4,"hueJitter":0.135,"topBoost":1,"topBoostRows":4.3,"topNarrow":0.605,"topRows":3.1,"widthJitter":0.635,"vertWidthVar":0.86,"vertWidthScale":2,"accentColor":"#6ee6cd","accentHarmony":"manual","accentPastel":0.67,"accentAmount":1,"accentDensity":0.68,"accentEdgeBias":1,"animateColors":true,"animateAccents":true,"animateHeights":false,"timeScale":0.645}
+
