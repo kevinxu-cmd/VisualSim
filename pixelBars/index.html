@@ -61,6 +61,10 @@ uniform float uTopNarrow;      // 0 = uniform width, 1 = topmost cell fully coll
 uniform float uTopRows;        // number of top cells affected by the taper
 uniform float uWidthJitter;    // 0 = all columns same width, 1 = edges can collapse
 uniform float uWidthJitterFalloff; // higher = jitter concentrated near visual edges
+uniform vec3  uAccentColor;        // complementary pastel tint sprinkled over cells
+uniform float uAccentAmount;       // intensity of the accent tint per affected cell
+uniform float uAccentDensity;      // 0 = no cells tinted, 1 = ~most cells tinted
+uniform float uAccentEdgeBias;     // 0 = accents anywhere, 1 = accents only at edges
 uniform float uSeed;
 uniform float uTimeScale;
 
@@ -179,6 +183,18 @@ void main() {
     float topProx = clamp((cy - filledCount + 3.0) / 2.0, 0.0, 1.0);
     col = mix(col, uColor4, topProx * uTopBoost);
 
+    // Pastel accent overlay — separate FBM field decides which cells get
+    // tinted toward uAccentColor (default a soft warm pink that complements
+    // a cool palette). Density sets how many cells qualify; edgeBias pulls
+    // the accents toward the left/right ends of the visual.
+    vec2 acoord = vec2(cx, cy) * 0.55 + uSeed * 0.831 + 42.0;
+    float aNoise = fbm(acoord);
+    float thresh = mix(0.95, 0.35, clamp(uAccentDensity, 0.0, 1.0));
+    float accentMask = smoothstep(thresh, thresh + 0.15, aNoise);
+    float aEdge = pow(clamp(abs(xn), 0.0, 1.0), 2.0);
+    float edgeWeight = mix(1.0, aEdge, clamp(uAccentEdgeBias, 0.0, 1.0));
+    col = mix(col, uAccentColor, accentMask * clamp(uAccentAmount, 0.0, 1.0) * edgeWeight);
+
     gl_FragColor = vec4(col, 1.0);
 }
 `;
@@ -242,6 +258,11 @@ const params = {
     widthJitter: 0.45,
     widthJitterFalloff: 2.50,
 
+    accentColor:    '#e8c0d0',
+    accentAmount:   0.55,
+    accentDensity:  0.30,
+    accentEdgeBias: 0.55,
+
     animateColors:  false,
     animateHeights: false,
     timeScale:      0.10,
@@ -268,6 +289,10 @@ const uniforms = {
     uTopRows:     { value: params.topRows },
     uWidthJitter: { value: params.widthJitter },
     uWidthJitterFalloff: { value: params.widthJitterFalloff },
+    uAccentColor:    { value: new THREE.Color(params.accentColor) },
+    uAccentAmount:   { value: params.accentAmount },
+    uAccentDensity:  { value: params.accentDensity },
+    uAccentEdgeBias: { value: params.accentEdgeBias },
     uSeed:        { value: params.heightSeed },
     uTimeScale:   { value: 0 },
     uHeightsTex:  { value: heightsTex },
@@ -360,6 +385,7 @@ const TEMPLATES = {
         noiseScale: 0.35, noiseAmount: 0.50, hueJitter: 0.18, topBoost: 0.10,
         topNarrow: 0.55, topRows: 2.50,
         widthJitter: 0.50, widthJitterFalloff: 2.50,
+        accentColor: '#e8c0d0', accentAmount: 0.55, accentDensity: 0.30, accentEdgeBias: 0.55,
     },
     slope: {
         template: 'slope',
@@ -371,6 +397,7 @@ const TEMPLATES = {
         noiseScale: 0.30, noiseAmount: 0.28, hueJitter: 0.08, topBoost: 0.35,
         topNarrow: 0.55, topRows: 2.50,
         widthJitter: 0.30, widthJitterFalloff: 2.80,
+        accentColor: '#e8c0d0', accentAmount: 0.0, accentDensity: 0.0, accentEdgeBias: 0.50,
     },
 };
 
@@ -398,6 +425,10 @@ function applyAllParams() {
     uniforms.uTopRows.value     = params.topRows;
     uniforms.uWidthJitter.value = params.widthJitter;
     uniforms.uWidthJitterFalloff.value = params.widthJitterFalloff;
+    uniforms.uAccentColor.value.set(params.accentColor);
+    uniforms.uAccentAmount.value   = params.accentAmount;
+    uniforms.uAccentDensity.value  = params.accentDensity;
+    uniforms.uAccentEdgeBias.value = params.accentEdgeBias;
     uniforms.uSeed.value        = params.heightSeed;
     uniforms.uTimeScale.value   = params.animateColors ? params.timeScale : 0;
     updateVisualBounds();
@@ -455,6 +486,12 @@ fM.add(params, 'noiseScale',  0.05,  2,  0.01 ).name('Noise Scale').onChange(v =
 fM.add(params, 'noiseAmount',    0,  1,  0.005).name('Noise vs Ramp').onChange(v => uniforms.uNoiseAmount.value = v);
 fM.add(params, 'hueJitter',      0, 0.5, 0.005).name('Per-Cell Jitter').onChange(v => uniforms.uHueJitter.value = v);
 fM.add(params, 'topBoost',       0,  1,  0.01 ).name('Top Highlight').onChange(v => uniforms.uTopBoost.value = v);
+
+const fAc = gui.addFolder('Accent (complementary)');
+fAc.addColor(params, 'accentColor').name('Accent Color').onChange(v => uniforms.uAccentColor.value.set(v));
+fAc.add(params, 'accentAmount',   0, 1, 0.005).name('Strength').onChange(v => uniforms.uAccentAmount.value = v);
+fAc.add(params, 'accentDensity',  0, 1, 0.005).name('Density').onChange(v => uniforms.uAccentDensity.value = v);
+fAc.add(params, 'accentEdgeBias', 0, 1, 0.005).name('Edge Bias').onChange(v => uniforms.uAccentEdgeBias.value = v);
 
 const fA = gui.addFolder('Animation');
 fA.add(params, 'animateColors').name('Animate Colors').onChange(v => uniforms.uTimeScale.value = v ? params.timeScale : 0);
