@@ -61,3 +61,4 @@ Collection of Visual Simulators to make visuals.
 
 {"template":"wave","color1":"#750000","color2":"#ff6a00","color3":"#ffb455","color4":"#ffffff","cols":70,"rows":25,"colGap":0.025,"rowGap":0,"visualWidth":1,"visualXCenter":0.49,"visualHeight":0.875,"heightBase":0.135,"heightVariance":0.77,"heightTrend":0.26,"freqScale":3.6,"heightSeed":91.22077976852206,"noiseScale":0.71,"noiseAmount":0.4,"hueJitter":0.135,"topBoost":1,"topBoostRows":4.3,"topNarrow":0.605,"topRows":3.1,"widthJitter":0.635,"vertWidthVar":0.86,"vertWidthScale":2,"accentColor":"#6ee6cd","accentHarmony":"manual","accentPastel":0.67,"accentAmount":1,"accentDensity":0.68,"accentEdgeBias":1,"animateColors":true,"animateAccents":true,"animateHeights":false,"timeScale":0.645}
 
+<img width="3202" height="2080" alt="image" src="https://github.com/user-attachments/assets/e192b1ef-3dbe-420c-8522-d5c36ee0423a" />
