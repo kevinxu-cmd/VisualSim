@@ -1,0 +1,829 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Gradient Spin — Spinner</title>
+<style>
+    html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #0b0b10; font-family: monospace; }
+    canvas { display: block; }
+    #sheet { position: fixed; inset: 0; display: none; pointer-events: none; }
+    #sheet.on { display: grid; }
+    #sheet .tile { position: relative; }
+    #sheet .tile span {
+        position: absolute; left: 0; right: 0; top: 76%;
+        text-align: center;
+        font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+        letter-spacing: 0.14em; text-transform: uppercase;
+    }
+</style>
+</head>
+<body>
+<div id="sheet"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19"></script>
+<script>
+// ─────────────────────────────────────────────
+// Gradient Spin — Spinner. The close-to-source sibling of index.html.
+//
+// index.html takes the wavefront idea from BIAsia/gradient-spin (MIT) and
+// blows it up into a full-screen field. This file goes the other way: it stays
+// at the size the original actually runs at — a square grid, 2×2 to 5×5 — and
+// reproduces its behaviour exactly.
+//
+// Faithful to the source:
+//   • The four original patterns, ported line for line, including the
+//     four-cell scroll tiling that keeps diagonal and snake from teleporting
+//     on wrap.
+//   • The per-cell table is built on the CPU the same way the React component
+//     builds it: a distance function per cell, phase = d / (max + 1), and for
+//     the "path" color axis a spatial-tiebreak ranking so every cell lands on
+//     its own point of the ramp instead of collapsing to a handful of samples.
+//   • The original CSS keyframe, exactly: full at 0%, dim by 45%, hold, back
+//     to full at 100%. Both breakpoints are exposed rather than hardcoded.
+//   • Cells composite over the background in sRGB, which is what a browser
+//     does with `opacity` — so what you see here is what the DOM version
+//     would show.
+//
+// What this file adds:
+//   • Twenty palettes instead of eight. The eight originals are carried over
+//     verbatim; the twelve new ones are built on explicit color-theory
+//     relationships, noted per palette below.
+//   • A contact sheet layout that draws every palette at once, so the set can
+//     be read side by side. Click any tile to open it on its own.
+//   • Resolution independence — the grid is drawn from signed distance fields,
+//     so it stays crisp from a 24px favicon to a wall.
+// ─────────────────────────────────────────────
+
+const MAX_CELLS = 25;      // 5 × 5
+const RAMP_W    = 256;     // samples per palette row in the ramp texture
+
+// ─────────────────────────────────────────────
+// Palettes
+//
+// The first eight are ported verbatim from gradient-spin's presets.ts. The
+// rest follow the same house style — a light desaturated head falling into a
+// saturated tail — with the color relationship named for each.
+// ─────────────────────────────────────────────
+const GRADIENTS = {
+    // ── the eight originals ──
+    sunrise: [
+        ['#B6D3EF', 0],     ['#CAD1D7', 0.153], ['#D7CFC8', 0.252],
+        ['#E1CDB9', 0.341], ['#EAC6A5', 0.424], ['#EDB185', 0.505],
+        ['#EF9B62', 0.586], ['#F18F60', 0.669], ['#F48D7A', 0.758],
+        ['#F78A94', 0.857], ['#F888A0', 1],
+    ],
+    bubble: [
+        ['#F5EBD9', 0], ['#F2D4DB', 0.31], ['#EBBDDE', 0.5],
+        ['#CCBAE3', 0.65], ['#8CBFF0', 0.82], ['#78B0FF', 1],
+    ],
+    peach: [
+        ['#D9F5FA', 0], ['#FCD9D6', 0.31], ['#FCBAC9', 0.61], ['#F0B3F5', 1],
+    ],
+    tonic: [
+        ['#E3EDF0', 0], ['#E8EBB8', 0.27], ['#F0DEA3', 0.43],
+        ['#E8B078', 0.75], ['#F29682', 1],
+    ],
+    mint: [
+        ['#DECEE8', 0], ['#CBBAEE', 0.21], ['#7DC0FB', 0.46], ['#00C7A6', 1],
+    ],
+    spring: [
+        ['#F7D5C5', 0.07], ['#46A8C0', 0.58], ['#43AE7D', 1],
+    ],
+    twilight: [
+        ['#E3CCE6', 0], ['#4E8CD5', 0.35], ['#6068C2', 0.64], ['#38364E', 1],
+    ],
+    bay: [
+        ['#DBE3D0', 0], ['#8DB8A7', 0.23], ['#2D8E9A', 0.42],
+        ['#076492', 0.59], ['#154288', 0.79], ['#262C81', 1],
+    ],
+
+    // ── twelve new ones ──
+    // analogous, cream through amber into a burnt red
+    ember: [
+        ['#F4E7D7', 0], ['#F1CBA6', 0.28], ['#E79A69', 0.53],
+        ['#C75F3E', 0.78], ['#8C3323', 1],
+    ],
+    // analogous cool, sand head cooling through turquoise into deep teal
+    lagoon: [
+        ['#EEE8D8', 0], ['#BCDAC7', 0.24], ['#6EC0B6', 0.5],
+        ['#2A90A8', 0.75], ['#125C86', 1],
+    ],
+    // analogous violet, the cool mirror of ember
+    orchid: [
+        ['#F6EDE9', 0], ['#E4CEE5', 0.26], ['#C3A6DE', 0.5],
+        ['#8F70C4', 0.76], ['#593D8C', 1],
+    ],
+    // analogous green, bone into forest
+    moss: [
+        ['#EEECDA', 0], ['#C7D4AD', 0.27], ['#93B47F', 0.52],
+        ['#5B8A5C', 0.77], ['#2D5940', 1],
+    ],
+    // monochromatic blue, ice to deep cobalt
+    cobalt: [
+        ['#E7EFF8', 0], ['#B5CEEC', 0.25], ['#6E9FDE', 0.5],
+        ['#2F62C4', 0.76], ['#16357F', 1],
+    ],
+    // complementary span, a mint head crossing into its opposite coral
+    apricot: [
+        ['#DCEFE6', 0], ['#F3DFC3', 0.3], ['#F5B98A', 0.56],
+        ['#EC8A6E', 0.8], ['#D65F63', 1],
+    ],
+    // monochromatic magenta, blush to aubergine
+    plum: [
+        ['#F8EAED', 0], ['#F0C5D4', 0.26], ['#D993B9', 0.5],
+        ['#A85E96', 0.76], ['#5F2F5E', 1],
+    ],
+    // near-neutral, a warm white cooling to graphite for quiet interfaces
+    slate: [
+        ['#F3F1ED', 0], ['#D6D4CF', 0.3], ['#AAA9A6', 0.56],
+        ['#6E6F70', 0.8], ['#3A3C40', 1],
+    ],
+    // analogous warm, aqua head into chartreuse and tangerine
+    citrus: [
+        ['#E9F4E5', 0], ['#DDECA7', 0.27], ['#EFD873', 0.5],
+        ['#F0A94C', 0.76], ['#E4713C', 1],
+    ],
+    // monochromatic red, ivory to crimson
+    rose: [
+        ['#FCF0E8', 0], ['#F7D0C7', 0.27], ['#EFA3A6', 0.52],
+        ['#D96A82', 0.77], ['#9E3357', 1],
+    ],
+    // monochromatic cool, white through steel into indigo
+    arctic: [
+        ['#F5F9FB', 0], ['#CCE7F0', 0.24], ['#8FC4DE', 0.48],
+        ['#4A87BE', 0.74], ['#22407F', 1],
+    ],
+    // split-complementary, a peach head landing on navy by way of mauve
+    dusk: [
+        ['#F8DDC9', 0], ['#E7B4B5', 0.26], ['#B98BB8', 0.5],
+        ['#6E6BAE', 0.75], ['#33356B', 1],
+    ],
+};
+
+const PALETTE_NAMES = Object.keys(GRADIENTS);
+const PATTERNS = ['arrow-up', 'diagonal', 'snake', 'ripple'];
+
+// ─────────────────────────────────────────────
+// Shaders
+// ─────────────────────────────────────────────
+const vertSrc = `
+void main() {
+    gl_Position = vec4(position, 1.0);
+}
+`;
+
+const fragSrc = `
+precision highp float;
+
+uniform vec2  uResolution;      // drawing-buffer pixels
+uniform float uTime;
+
+uniform int   uSize;            // cells per side, 2..5
+uniform float uCellPx;          // cell edge in drawing-buffer pixels
+uniform float uGapRatio;        // gutter as a fraction of a cell
+uniform float uRadiusRatio;     // 0 = square corners, 1 = fully round
+
+uniform float uProgress;        // cycle position, advanced on the CPU
+uniform float uDim;             // resting opacity
+uniform float uFallTo;          // keyframe stop where the fade bottoms out
+uniform float uHoldTo;          // keyframe stop where the rise begins
+uniform float uPhase[${MAX_CELLS}];
+uniform float uColorT[${MAX_CELLS}];
+
+uniform sampler2D uPalettes;
+uniform float uPaletteCount;
+uniform float uPaletteIndex;
+
+uniform vec2  uCenter;          // single mode placement, 0..1 of the viewport
+uniform int   uSheet;           // 0 = single, 1 = contact sheet
+uniform vec2  uSheetGrid;       // (cols, rows)
+uniform float uFitFrac;         // share of a tile the spinner spans
+
+uniform vec3  uBg;              // background, sRGB
+uniform float uGlow;
+uniform float uGlowRadius;      // in cell widths
+uniform float uGrain;
+
+float hash21(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+float sdRoundBox(vec2 p, vec2 b, float r) {
+    vec2 q = abs(p) - b + r;
+    return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+}
+
+// The halo is additive and can push a pale cell past 1.0, where clipping
+// would drag it to white and lose the palette's hue. Scaling the colour so its
+// brightest channel lands exactly on 1 keeps the ratios, and the whole thing is
+// the identity below 1.0 — so the faithful path, with the glow off, is never
+// touched.
+vec3 rolloff(vec3 c) {
+    float m = max(max(c.r, c.g), c.b);
+    return m > 1.0 ? c / m : c;
+}
+
+// The original's keyframe, unrolled: full at 0, falling to dim by uFallTo,
+// holding until uHoldTo, then climbing back to full at the wrap.
+float spinnerOpacity(float u) {
+    if (u < uFallTo) return mix(1.0, uDim, u / max(uFallTo, 1e-4));
+    if (u < uHoldTo) return uDim;
+    return mix(uDim, 1.0, (u - uHoldTo) / max(1.0 - uHoldTo, 1e-4));
+}
+
+vec3 paletteSample(float t, float row) {
+    float x = (floor(clamp(t, 0.0, 1.0) * float(${RAMP_W} - 1)) + 0.5) / float(${RAMP_W});
+    return texture2D(uPalettes, vec2(x, (row + 0.5) / uPaletteCount)).rgb;
+}
+
+void main() {
+    vec2 res  = uResolution;
+    vec2 frag = gl_FragCoord.xy;
+    vec2 fragTD = vec2(frag.x, res.y - frag.y);   // y down, to match row order
+
+    float pIdx = uPaletteIndex;
+    vec2  centerTD = res * uCenter;
+    float cellPx = uCellPx;
+
+    if (uSheet == 1) {
+        vec2 tile = res / uSheetGrid;
+        vec2 ti = clamp(floor(fragTD / tile), vec2(0.0), uSheetGrid - 1.0);
+        pIdx = ti.y * uSheetGrid.x + ti.x;
+        if (pIdx > uPaletteCount - 0.5) {
+            gl_FragColor = vec4(uBg, 1.0);
+            return;
+        }
+        centerTD = (ti + vec2(0.5, 0.42)) * tile;
+        float spanCells = float(uSize) + float(uSize - 1) * uGapRatio;
+        cellPx = min(tile.x, tile.y) * uFitFrac / spanCells;
+    }
+
+    float pitch = cellPx * (1.0 + uGapRatio);
+    float span  = float(uSize) * cellPx + float(uSize - 1) * cellPx * uGapRatio;
+
+    // Position within the spinner, with its top-left corner at the origin.
+    vec2 q = fragTD - centerTD + vec2(span * 0.5);
+
+    // Every cell is visited once. The nearest one owns the fragment and draws
+    // it; all of them contribute to the halo.
+    //
+    // Attributing the halo to the nearest cell alone is what a per-cell glow
+    // usually does, and it puts a hard seam down every line equidistant from
+    // two cells, because neighbours sit at different opacities. Summing the
+    // contributions is both cheaper to reason about and continuous — and 25
+    // cells is the whole grid at 5 x 5, so the loop is bounded and small.
+    float R = max(uGlowRadius * cellPx, 1e-3);
+    float halfCell = cellPx * 0.5;
+    vec2  b = vec2(halfCell);
+    float r = uRadiusRatio * halfCell;
+
+    float nearest  = 1e9;
+    float nearOp   = 0.0;
+    float nearT    = 0.0;      // the winner's ramp position, resolved after the loop
+    vec3  halo     = vec3(0.0);
+
+    for (int i = 0; i < ${MAX_CELLS}; i++) {
+        if (i >= uSize * uSize) break;
+        int row = i / uSize;
+        int col = i - row * uSize;
+        vec2 centre = vec2(float(col), float(row)) * pitch + vec2(halfCell);
+
+        float d  = sdRoundBox(q - centre, b, r);
+        float op = spinnerOpacity(fract(uProgress - uPhase[i]));
+
+        if (d < nearest) { nearest = d; nearOp = op; nearT = uColorT[i]; }
+
+        // Guarded on a uniform, so the branch is coherent across the whole
+        // draw rather than diverging per fragment. With the glow off — the
+        // faithful default — this leaves the loop free of texture reads, and
+        // the owning cell needs only the single lookup below.
+        if (uGlow > 0.0) {
+            halo += paletteSample(uColorT[i], pIdx) * (exp(-max(d, 0.0) / R) * op);
+        }
+    }
+
+    vec3 nearCol = paletteSample(nearT, pIdx);
+
+    float aa = max(fwidth(nearest), 1e-4);
+    float mask = 1.0 - smoothstep(-aa, aa, nearest);
+
+    // Composited in sRGB on purpose: that is the space a browser blends CSS
+    // opacity in, so the result matches the DOM original rather than
+    // improving on it.
+    vec3 col = mix(uBg, nearCol, mask * nearOp);
+    col += halo * uGlow;
+    col = rolloff(col);
+    col += (hash21(frag + fract(uTime) * 91.7) - 0.5) * uGrain;
+
+    gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+}
+`;
+
+// ─────────────────────────────────────────────
+// Color helpers — the ramp texture is built in OKLab, matching the source
+// library's sampleGradient rather than lerping through sRGB.
+// ─────────────────────────────────────────────
+function hexToRgb(hex) {
+    let h = hex.replace(/^#/, '');
+    if (h.length === 3) h = h.split('').map(c => c + c).join('');
+    return [
+        parseInt(h.slice(0, 2), 16) / 255,
+        parseInt(h.slice(2, 4), 16) / 255,
+        parseInt(h.slice(4, 6), 16) / 255,
+    ];
+}
+function srgbToLinear(v) {
+    return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+}
+function linearToSrgb(v) {
+    const c = Math.min(Math.max(v, 0), 1);
+    return c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+}
+function hexToOklab(hex) {
+    const [r, g, b] = hexToRgb(hex).map(srgbToLinear);
+    const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+    const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+    const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+    return [
+        0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
+        1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
+        0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s,
+    ];
+}
+function oklabToRgb255(lab) {
+    const [l, a, b] = lab;
+    const lc = Math.pow(l + 0.3963377774 * a + 0.2158037573 * b, 3);
+    const mc = Math.pow(l - 0.1055613458 * a - 0.0638541728 * b, 3);
+    const sc = Math.pow(l - 0.0894841775 * a - 1.2914855480 * b, 3);
+    return [
+         4.0767416621 * lc - 3.3077115913 * mc + 0.2309699292 * sc,
+        -1.2684380046 * lc + 2.6097574011 * mc - 0.3413193965 * sc,
+        -0.0041960863 * lc - 0.7034186147 * mc + 1.7076147010 * sc,
+    ].map(v => Math.round(linearToSrgb(v) * 255));
+}
+function sampleStopsRgb255(stops, t) {
+    const first = stops[0], last = stops[stops.length - 1];
+    t = Math.min(Math.max(t, first[1]), last[1]);
+    let lo = first, hi = last;
+    for (let i = 0; i < stops.length - 1; i++) {
+        if (t >= stops[i][1] && t <= stops[i + 1][1]) { lo = stops[i]; hi = stops[i + 1]; break; }
+    }
+    const span = hi[1] - lo[1];
+    const m = span > 1e-6 ? (t - lo[1]) / span : 0;
+    const A = hexToOklab(lo[0]), B = hexToOklab(hi[0]);
+    return oklabToRgb255([0, 1, 2].map(i => A[i] + (B[i] - A[i]) * m));
+}
+
+// ─────────────────────────────────────────────
+// Patterns — a direct port of the source library's patterns.ts
+// ─────────────────────────────────────────────
+
+// A single corner-to-corner sweep teleports on wrap: the trailing comet is
+// still lit at one end as the new head enters the other. Tiling the scrolling
+// patterns into repeating bands fixes it — one stripe leaves an edge exactly
+// as the next enters the opposite one, whatever the grid size.
+const SCROLL_BAND = 4;
+
+function cellWaveOrder(pattern, row, col, rows, cols) {
+    const centerCol = (cols - 1) / 2;
+    switch (pattern) {
+        case 'arrow-up':
+            // Chevron fold across the center column, apex climbing as d grows.
+            return {
+                d: rows - 1 - row + Math.abs(col - centerCol),
+                max: rows - 1 + centerCol,
+            };
+        case 'diagonal':
+            // Anti-diagonal stripes scrolling toward the bottom-right.
+            return { d: (row + col) % SCROLL_BAND, max: SCROLL_BAND - 1 };
+        case 'snake': {
+            // Boustrophedon index from the bottom-left, tiled into comets.
+            const rowFromBottom = rows - 1 - row;
+            const leftToRight = rowFromBottom % 2 === 0;
+            const path = rowFromBottom * cols + (leftToRight ? col : cols - 1 - col);
+            return { d: path % SCROLL_BAND, max: SCROLL_BAND - 1 };
+        }
+        default: {
+            // ripple — Chebyshev distance, expanding square rings.
+            const centerRow = (rows - 1) / 2;
+            return {
+                d: Math.max(Math.abs(row - centerRow), Math.abs(col - centerCol)),
+                max: Math.max(centerRow, centerCol),
+            };
+        }
+    }
+}
+
+// ─────────────────────────────────────────────
+// Parameters
+// ─────────────────────────────────────────────
+const params = {
+    layout:  'single',
+    palette: 'sunrise',
+    pattern: 'arrow-up',
+    // The source defaults to 'row', which on an n x n grid shows only n colors.
+    // 'path' gives every cell its own point on the ramp, so a single spinner
+    // shows the whole palette - which is the point of the contact sheet.
+    colorBy: 'path',
+
+    size:        3,
+    cellPx:      96,
+    gapRatio:    0.50,     // the original's 2px gutter on a 4px cell
+    radiusRatio: 0.50,     // the original's 1px radius on a 4px cell
+
+    centerX: 0.50,
+    centerY: 0.50,
+
+    period: 0.75,          // the original's 750ms
+    // The source defaults to 0.10, which is right for a spinner you are meant
+    // to read as motion. On a full screen it erases the resting matrix, so the
+    // palette disappears — 0.28 keeps the grid legible. Drop it back to 0.10
+    // for exact parity.
+    dim:    0.28,
+    fallTo: 0.45,          // the original's keyframe breakpoints
+    holdTo: 0.92,
+    paused: false,
+
+    background: '#0b0b10',
+    glow:       0.00,
+    glowRadius: 0.45,
+    grain:      0.010,
+    fitFrac:    0.62,
+};
+const DEFAULTS = { ...params };
+
+// ─────────────────────────────────────────────
+// Renderer
+// ─────────────────────────────────────────────
+const renderer = new THREE.WebGLRenderer({ antialias: false, preserveDrawingBuffer: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+document.body.appendChild(renderer.domElement);
+
+const scene  = new THREE.Scene();
+const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
+const phaseArr  = new Float32Array(MAX_CELLS);
+const colorTArr = new Float32Array(MAX_CELLS);
+
+// One row of the texture per palette, each row a 256-step OKLab ramp.
+function buildPaletteTexture() {
+    const data = new Uint8Array(RAMP_W * PALETTE_NAMES.length * 4);
+    PALETTE_NAMES.forEach((name, row) => {
+        const stops = GRADIENTS[name];
+        for (let x = 0; x < RAMP_W; x++) {
+            const [r, g, b] = sampleStopsRgb255(stops, x / (RAMP_W - 1));
+            const o = (row * RAMP_W + x) * 4;
+            data[o] = r; data[o + 1] = g; data[o + 2] = b; data[o + 3] = 255;
+        }
+    });
+    const tex = new THREE.DataTexture(data, RAMP_W, PALETTE_NAMES.length, THREE.RGBAFormat);
+    tex.minFilter = THREE.NearestFilter;
+    tex.magFilter = THREE.NearestFilter;
+    tex.needsUpdate = true;
+    return tex;
+}
+
+const uniforms = {
+    uResolution:   { value: new THREE.Vector2(1, 1) },
+    uTime:         { value: 0 },
+    uSize:         { value: params.size },
+    uCellPx:       { value: params.cellPx },
+    uGapRatio:     { value: params.gapRatio },
+    uRadiusRatio:  { value: params.radiusRatio },
+    uProgress:     { value: 0 },
+    uDim:          { value: params.dim },
+    uFallTo:       { value: params.fallTo },
+    uHoldTo:       { value: params.holdTo },
+    uPhase:        { value: phaseArr },
+    uColorT:       { value: colorTArr },
+    uPalettes:     { value: buildPaletteTexture() },
+    uPaletteCount: { value: PALETTE_NAMES.length },
+    uPaletteIndex: { value: 0 },
+    uCenter:       { value: new THREE.Vector2(params.centerX, params.centerY) },
+    uSheet:        { value: 0 },
+    uSheetGrid:    { value: new THREE.Vector2(1, 1) },
+    uFitFrac:      { value: params.fitFrac },
+    uBg:           { value: new THREE.Vector3() },
+    uGlow:         { value: params.glow },
+    uGlowRadius:   { value: params.glowRadius },
+    uGrain:        { value: params.grain },
+};
+
+const material = new THREE.ShaderMaterial({
+    vertexShader:   vertSrc,
+    fragmentShader: fragSrc,
+    uniforms,
+    extensions: { derivatives: true },
+});
+scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material));
+
+// ─────────────────────────────────────────────
+// Per-cell table — built the way the React component builds it
+// ─────────────────────────────────────────────
+function buildCellTable() {
+    const n = params.size;
+    const seeds = [];
+    for (let row = 0; row < n; row++) {
+        for (let col = 0; col < n; col++) {
+            seeds.push({ row, col, ...cellWaveOrder(params.pattern, row, col, n, n) });
+        }
+    }
+
+    // The "path" axis gives every cell its own sample point: cells are ranked
+    // along the wave, ties broken spatially. Sampling at the distance value
+    // itself would collapse a 3×3 chevron to four colors.
+    const rank = new Map();
+    if (params.colorBy === 'path') {
+        [...seeds]
+            .sort((a, b) => a.d - b.d || a.row - b.row || a.col - b.col)
+            .forEach((s, i) => rank.set(`${s.row}-${s.col}`, i));
+    }
+
+    phaseArr.fill(0);
+    colorTArr.fill(0);
+    for (const s of seeds) {
+        const i = s.row * n + s.col;
+        // The +1 keeps the wrap gap equal to the gap between fronts, so the
+        // loop re-enters seamlessly instead of first and last firing together.
+        phaseArr[i] = s.max === 0 ? 0 : s.d / (s.max + 1);
+        colorTArr[i] = params.colorBy === 'path'
+            ? (seeds.length > 1 ? rank.get(`${s.row}-${s.col}`) / (seeds.length - 1) : 0)
+            : (n > 1 ? s.row / (n - 1) : 0);
+    }
+}
+
+// ─────────────────────────────────────────────
+// Contact sheet layout
+// ─────────────────────────────────────────────
+const sheetEl = document.getElementById('sheet');
+
+// Pick the tiling whose tiles come closest to square, with a small penalty for
+// leaving empty slots.
+function sheetGrid(count, aspect) {
+    let best = null;
+    for (let cols = 1; cols <= count; cols++) {
+        const rows = Math.ceil(count / cols);
+        const score = Math.abs(Math.log((aspect * rows) / cols)) + (cols * rows - count) * 0.06;
+        if (!best || score < best.score) best = { cols, rows, score };
+    }
+    return best;
+}
+
+function updateSheet() {
+    const on = params.layout === 'sheet';
+    uniforms.uSheet.value = on ? 1 : 0;
+    sheetEl.classList.toggle('on', on);
+    if (!on) { sheetEl.innerHTML = ''; return; }
+
+    const { cols, rows } = sheetGrid(PALETTE_NAMES.length,
+        window.innerWidth / Math.max(window.innerHeight, 1));
+    uniforms.uSheetGrid.value.set(cols, rows);
+
+    const [r, g, b] = hexToRgb(params.background);
+    const light = 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.5;
+    const ink = light ? 'rgba(0,0,0,0.55)' : 'rgba(255,255,255,0.55)';
+
+    sheetEl.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+    sheetEl.style.gridTemplateRows    = `repeat(${rows}, 1fr)`;
+    sheetEl.innerHTML = Array.from({ length: cols * rows }, (_, i) =>
+        `<div class="tile">${i < PALETTE_NAMES.length
+            ? `<span style="color:${ink}">${PALETTE_NAMES[i]}</span>` : ''}</div>`
+    ).join('');
+}
+
+// Clicking a tile opens that palette on its own.
+renderer.domElement.addEventListener('click', e => {
+    if (params.layout !== 'sheet') return;
+    const { x: cols, y: rows } = uniforms.uSheetGrid.value;
+    const i = Math.floor(e.clientY / (window.innerHeight / rows)) * cols
+            + Math.floor(e.clientX / (window.innerWidth / cols));
+    if (i < 0 || i >= PALETTE_NAMES.length) return;
+    params.palette = PALETTE_NAMES[i];
+    params.layout = 'single';
+    applyAllParams();
+});
+
+// ─────────────────────────────────────────────
+// Apply
+// ─────────────────────────────────────────────
+let gui = null;
+function refreshGui() {
+    if (gui) gui.controllersRecursive().forEach(c => c.updateDisplay());
+}
+
+function updateResolution() {
+    const size = renderer.getDrawingBufferSize(new THREE.Vector2());
+    uniforms.uResolution.value.copy(size);
+    // The cell slider is in CSS pixels; the shader works in buffer pixels.
+    uniforms.uCellPx.value = params.cellPx * (size.x / Math.max(window.innerWidth, 1));
+}
+
+// The hold has to start after the fade bottoms out, or the keyframe inverts.
+function applyKeyframe() {
+    uniforms.uFallTo.value = params.fallTo;
+    uniforms.uHoldTo.value = Math.max(params.holdTo, params.fallTo + 0.01);
+}
+
+function applyAllParams() {
+    params.size = Math.min(5, Math.max(2, Math.round(params.size)));
+    uniforms.uSize.value        = params.size;
+    uniforms.uGapRatio.value    = params.gapRatio;
+    uniforms.uRadiusRatio.value = params.radiusRatio;
+    uniforms.uDim.value         = params.dim;
+    uniforms.uFitFrac.value     = params.fitFrac;
+    uniforms.uCenter.value.set(params.centerX, params.centerY);
+    uniforms.uGlow.value        = params.glow;
+    uniforms.uGlowRadius.value  = params.glowRadius;
+    uniforms.uGrain.value       = params.grain;
+    uniforms.uPaletteIndex.value = Math.max(0, PALETTE_NAMES.indexOf(params.palette));
+
+    const [r, g, b] = hexToRgb(params.background);
+    uniforms.uBg.value.set(r, g, b);
+    document.body.style.background = params.background;
+
+    applyKeyframe();
+    buildCellTable();
+    updateResolution();
+    updateSheet();
+    refreshGui();
+}
+
+// ─────────────────────────────────────────────
+// GUI
+// ─────────────────────────────────────────────
+gui = new lil.GUI({ title: 'Gradient Spin — Spinner' });
+
+gui.add(params, 'layout', { Single: 'single', 'Contact sheet': 'sheet' })
+   .name('Layout').onChange(updateSheet);
+
+const fS = gui.addFolder('Spinner');
+fS.add(params, 'size', 2, 5, 1).name('Grid (n × n)')
+  .onChange(() => { uniforms.uSize.value = params.size; buildCellTable(); });
+fS.add(params, 'pattern', PATTERNS).name('Pattern').onChange(buildCellTable);
+fS.add(params, 'colorBy', { Row: 'row', Path: 'path' }).name('Color Axis').onChange(buildCellTable);
+fS.add(params, 'cellPx', 8, 320, 1).name('Cell Size (px)').onChange(updateResolution);
+fS.add(params, 'gapRatio',    0, 1.5, 0.01).name('Gap ÷ Cell').onChange(v => uniforms.uGapRatio.value = v);
+fS.add(params, 'radiusRatio', 0, 1,   0.01).name('Corner Radius').onChange(v => uniforms.uRadiusRatio.value = v);
+fS.add(params, 'centerX', 0, 1, 0.005).name('Place X').onChange(v => uniforms.uCenter.value.x = v);
+fS.add(params, 'centerY', 0, 1, 0.005).name('Place Y').onChange(v => uniforms.uCenter.value.y = v);
+
+const fA = gui.addFolder('Animation');
+fA.add(params, 'period', 0.15, 6, 0.01).name('Period (s)');
+fA.add(params, 'dim',    0, 1, 0.005).name('Resting Opacity').onChange(v => uniforms.uDim.value = v);
+fA.add(params, 'fallTo', 0.05, 0.9,  0.005).name('Fade Out By').onChange(applyKeyframe);
+fA.add(params, 'holdTo', 0.1,  0.99, 0.005).name('Hold Until').onChange(applyKeyframe);
+fA.add(params, 'paused').name('Pause');
+
+const fL = gui.addFolder('Look');
+fL.addColor(params, 'background').name('Background').onChange(() => {
+    const [r, g, b] = hexToRgb(params.background);
+    uniforms.uBg.value.set(r, g, b);
+    document.body.style.background = params.background;
+    updateSheet();
+});
+fL.add(params, 'palette', PALETTE_NAMES).name('Palette')
+  .onChange(v => uniforms.uPaletteIndex.value = PALETTE_NAMES.indexOf(v));
+fL.add(params, 'glow',       0, 1.5, 0.01).name('Glow').onChange(v => uniforms.uGlow.value = v);
+fL.add(params, 'glowRadius', 0.1, 3, 0.01).name('Glow Falloff').onChange(v => uniforms.uGlowRadius.value = v);
+fL.add(params, 'grain',      0, 0.08, 0.001).name('Grain').onChange(v => uniforms.uGrain.value = v);
+fL.add(params, 'fitFrac',    0.2, 0.9, 0.01).name('Sheet Fit').onChange(v => uniforms.uFitFrac.value = v);
+
+// ─────────────────────────────────────────────
+// Export / Import
+// The async Clipboard API is permission-denied inside some embedded preview
+// webviews, so every path falls back to prompt(), where the user's own
+// Cmd/Ctrl+C is the privileged action.
+// ─────────────────────────────────────────────
+function flash(ctrl, label, revert) {
+    ctrl.name(label);
+    setTimeout(() => ctrl.name(revert), 1400);
+}
+
+async function copySettings() {
+    const text = JSON.stringify(params, null, 2);
+    try {
+        await navigator.clipboard.writeText(text);
+        flash(copyCtrl, 'Copied ✓', 'Copy Settings');
+    } catch {
+        window.prompt('Copy these settings:', text);
+        flash(copyCtrl, 'Copy manually', 'Copy Settings');
+    }
+}
+
+async function pasteSettings() {
+    let text = '';
+    try { text = await navigator.clipboard.readText(); } catch {}
+    if (!text) text = window.prompt('Paste settings JSON:') || '';
+    if (!text.trim()) return;
+    let data;
+    try { data = JSON.parse(text); }
+    catch { flash(pasteCtrl, 'Invalid JSON', 'Paste Settings'); return; }
+    Object.assign(params, DEFAULTS, data);
+    applyAllParams();
+    flash(pasteCtrl, 'Applied ✓', 'Paste Settings');
+}
+
+function savePNG() {
+    renderer.render(scene, camera);
+    renderer.domElement.toBlob(blob => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `gradient-spinner-${Date.now()}.png`;
+        document.body.appendChild(a); a.click(); a.remove();
+        URL.revokeObjectURL(url);
+    });
+}
+
+function recordVideo() {
+    const candidates = [
+        'video/mp4;codecs=avc1.42E01E',
+        'video/mp4',
+        'video/webm;codecs=vp9',
+        'video/webm;codecs=vp8',
+        'video/webm',
+    ];
+    const mime = candidates.find(t =>
+        window.MediaRecorder && MediaRecorder.isTypeSupported(t));
+    if (!mime) { flash(recordCtrl, 'Unsupported', 'Record 6s MP4'); return; }
+    const ext = mime.startsWith('video/mp4') ? 'mp4' : 'webm';
+
+    const stream = renderer.domElement.captureStream(60);
+    const recorder = new MediaRecorder(stream, {
+        mimeType: mime, videoBitsPerSecond: 12_000_000,
+    });
+    const chunks = [];
+    recorder.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+    recorder.onstop = () => {
+        const blob = new Blob(chunks, { type: mime });
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement('a');
+        a.href = url;
+        a.download = `gradient-spinner-${Date.now()}.${ext}`;
+        document.body.appendChild(a); a.click(); a.remove();
+        URL.revokeObjectURL(url);
+        recordCtrl.name('Record 6s MP4');
+    };
+    recorder.start();
+    const t0 = performance.now();
+    const tick = () => {
+        const elapsed = (performance.now() - t0) / 1000;
+        if (elapsed >= 6) { recorder.stop(); return; }
+        recordCtrl.name(`Recording… ${(6 - elapsed).toFixed(1)}s`);
+        requestAnimationFrame(tick);
+    };
+    tick();
+}
+
+const fIO = gui.addFolder('Export / Import');
+const io = { copy: copySettings, paste: pasteSettings, png: savePNG, record: recordVideo };
+const copyCtrl   = fIO.add(io, 'copy').name('Copy Settings');
+const pasteCtrl  = fIO.add(io, 'paste').name('Paste Settings');
+fIO.add(io, 'png').name('Save PNG');
+const recordCtrl = fIO.add(io, 'record').name('Record 6s MP4');
+fIO.close();
+
+// ─────────────────────────────────────────────
+// Startup
+// ?palette=dusk&pattern=snake&size=4&layout=sheet
+// ─────────────────────────────────────────────
+const q = new URLSearchParams(location.search);
+if (GRADIENTS[q.get('palette')])          params.palette = q.get('palette');
+if (PATTERNS.includes(q.get('pattern')))  params.pattern = q.get('pattern');
+if (q.get('size'))                        params.size = parseInt(q.get('size'), 10) || params.size;
+if (q.get('layout') === 'sheet')          params.layout = 'sheet';
+
+applyAllParams();
+
+// The original freezes to a static mid-state under prefers-reduced-motion.
+if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    params.paused = true;
+    uniforms.uProgress.value = 0.22;
+    refreshGui();
+}
+
+// ─────────────────────────────────────────────
+// Resize + render loop
+// ─────────────────────────────────────────────
+window.addEventListener('resize', () => {
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    updateResolution();
+    updateSheet();
+});
+
+const clock = new THREE.Clock();
+function animate() {
+    const dt = Math.min(clock.getDelta(), 0.1);
+    uniforms.uTime.value = clock.getElapsedTime();
+    if (!params.paused) {
+        uniforms.uProgress.value =
+            (uniforms.uProgress.value + dt / Math.max(params.period, 0.05)) % 1;
+    }
+    renderer.render(scene, camera);
+    requestAnimationFrame(animate);
+}
+animate();
+</script>
+</body>
+</html>

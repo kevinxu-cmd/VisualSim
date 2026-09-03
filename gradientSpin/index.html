@@ -47,9 +47,15 @@
 const MAX_STOPS = 14;
 
 // ─────────────────────────────────────────────
-// Palettes — ported verbatim from gradient-spin's presets.ts
+// Palettes
+//
+// The first eight are ported verbatim from gradient-spin's presets.ts. The
+// rest follow the same house style — a light desaturated head falling into a
+// saturated tail — with the color relationship named for each. The sibling
+// index-spinner.html carries the same set.
 // ─────────────────────────────────────────────
 const GRADIENTS = {
+    // ── the eight originals ──
     sunrise: [
         ['#B6D3EF', 0],     ['#CAD1D7', 0.153], ['#D7CFC8', 0.252],
         ['#E1CDB9', 0.341], ['#EAC6A5', 0.424], ['#EDB185', 0.505],
@@ -79,6 +85,68 @@ const GRADIENTS = {
     bay: [
         ['#DBE3D0', 0], ['#8DB8A7', 0.23], ['#2D8E9A', 0.42],
         ['#076492', 0.59], ['#154288', 0.79], ['#262C81', 1],
+    ],
+
+    // ── twelve new ones ──
+    // analogous, cream through amber into a burnt red
+    ember: [
+        ['#F4E7D7', 0], ['#F1CBA6', 0.28], ['#E79A69', 0.53],
+        ['#C75F3E', 0.78], ['#8C3323', 1],
+    ],
+    // analogous cool, sand head cooling through turquoise into deep teal
+    lagoon: [
+        ['#EEE8D8', 0], ['#BCDAC7', 0.24], ['#6EC0B6', 0.5],
+        ['#2A90A8', 0.75], ['#125C86', 1],
+    ],
+    // analogous violet, the cool mirror of ember
+    orchid: [
+        ['#F6EDE9', 0], ['#E4CEE5', 0.26], ['#C3A6DE', 0.5],
+        ['#8F70C4', 0.76], ['#593D8C', 1],
+    ],
+    // analogous green, bone into forest
+    moss: [
+        ['#EEECDA', 0], ['#C7D4AD', 0.27], ['#93B47F', 0.52],
+        ['#5B8A5C', 0.77], ['#2D5940', 1],
+    ],
+    // monochromatic blue, ice to deep cobalt
+    cobalt: [
+        ['#E7EFF8', 0], ['#B5CEEC', 0.25], ['#6E9FDE', 0.5],
+        ['#2F62C4', 0.76], ['#16357F', 1],
+    ],
+    // complementary span, a mint head crossing into its opposite coral
+    apricot: [
+        ['#DCEFE6', 0], ['#F3DFC3', 0.3], ['#F5B98A', 0.56],
+        ['#EC8A6E', 0.8], ['#D65F63', 1],
+    ],
+    // monochromatic magenta, blush to aubergine
+    plum: [
+        ['#F8EAED', 0], ['#F0C5D4', 0.26], ['#D993B9', 0.5],
+        ['#A85E96', 0.76], ['#5F2F5E', 1],
+    ],
+    // near-neutral, a warm white cooling to graphite for quiet interfaces
+    slate: [
+        ['#F3F1ED', 0], ['#D6D4CF', 0.3], ['#AAA9A6', 0.56],
+        ['#6E6F70', 0.8], ['#3A3C40', 1],
+    ],
+    // analogous warm, aqua head into chartreuse and tangerine
+    citrus: [
+        ['#E9F4E5', 0], ['#DDECA7', 0.27], ['#EFD873', 0.5],
+        ['#F0A94C', 0.76], ['#E4713C', 1],
+    ],
+    // monochromatic red, ivory to crimson
+    rose: [
+        ['#FCF0E8', 0], ['#F7D0C7', 0.27], ['#EFA3A6', 0.52],
+        ['#D96A82', 0.77], ['#9E3357', 1],
+    ],
+    // monochromatic cool, white through steel into indigo
+    arctic: [
+        ['#F5F9FB', 0], ['#CCE7F0', 0.24], ['#8FC4DE', 0.48],
+        ['#4A87BE', 0.74], ['#22407F', 1],
+    ],
+    // split-complementary, a peach head landing on navy by way of mauve
+    dusk: [
+        ['#F8DDC9', 0], ['#E7B4B5', 0.26], ['#B98BB8', 0.5],
+        ['#6E6BAE', 0.75], ['#33356B', 1],
     ],
 };
 
