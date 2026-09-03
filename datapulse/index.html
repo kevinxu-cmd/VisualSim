@@ -16,9 +16,13 @@
 // ─────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────
-const MAX_FIBERS       = 150;   // pre-allocated cap per network
-const POINTS_PER_FIBER = 220;
-const WORLD_HALF_H     = 6.5;   // camera z=14, FOV=50 → 14*tan(25°)
+const MAX_FIBERS        = 400;   // pre-allocated cap per network
+const POINTS_PER_FIBER  = 220;
+const VERTS_PER_FIBER   = POINTS_PER_FIBER * 2;          // ribbon: 2 verts per point
+const INDICES_PER_FIBER = (POINTS_PER_FIBER - 1) * 6;    // one quad per segment
+const WORLD_HALF_H      = 6.5;   // camera z=14, FOV=50 -> 14*tan(25 deg)
+const GOLDEN            = 0.6180339887498949;
+const TWO_PI            = Math.PI * 2;
 
 // ─────────────────────────────────────────────
 // Renderer / Scene / Camera
@@ -39,91 +43,308 @@ camera.position.set(0, 0, 14);
 // ─────────────────────────────────────────────
 // Global parameters
 // ─────────────────────────────────────────────
-const globalParams = {
-    backgroundColor:   '#000000',
-    particleColor:     '#FF8000',
-    particleSpeed:     0.20,
-    particleSpawnRate: 1,
-    glow:              true,
-};
+function defaultGlobal() {
+    return {
+        preset:            'DataPulse',
+        backgroundColor:   '#000000',
+        particleColor:     '#FF8000',
+        particleSpeed:     0.20,
+        particleSpawnRate: 1,
+        glow:              true,
+    };
+}
+const globalParams = defaultGlobal();
 
 // ─────────────────────────────────────────────
-// Per-network defaults  (values from screenshot)
+// Gradients and colour harmony
+// ─────────────────────────────────────────────
+const STRIPE_GRADIENT =
+    'linear-gradient(90deg, #7FA9F2 0%, #B4C3F3 20%, #FFA53B 44%, ' +
+    '#FF6A2B 62%, #FF4DA6 80%, #8E4BFF 100%)';
+const STRIPE_GRADIENT_B =
+    'linear-gradient(90deg, #FFB24A 0%, #FF5E9E 40%, #A24CFF 75%, #4B5BFF 100%)';
+
+// Hue offsets (degrees) from the base hue, spread evenly across the width.
+const HARMONY_SCHEMES = {
+    analogous:          [-40, -20, 0, 20, 40],
+    complementary:      [0, 180],
+    splitComplementary: [0, 150, 210],
+    triadic:            [0, 120, 240],
+    tetradic:           [0, 90, 180, 270],
+};
+
+function hslHex(h, s, l) {
+    const c = new THREE.Color();
+    c.setHSL(((h % 360) + 360) % 360 / 360, s / 100, l / 100);
+    return '#' + c.getHexString().toUpperCase();
+}
+
+function harmonyGradient(scheme, baseHue, saturation, lightness) {
+    const offsets = HARMONY_SCHEMES[scheme] || HARMONY_SCHEMES.analogous;
+    const stops = offsets.map((off, i) => {
+        const pos = Math.round(i / (offsets.length - 1) * 100);
+        return `${hslHex(baseHue + off, saturation, lightness)} ${pos}%`;
+    });
+    return `linear-gradient(90deg, ${stops.join(', ')})`;
+}
+
+function parseGradientStops(str) {
+    const stops = [];
+    const re = /(#[0-9a-fA-F]{3,8})\s+(\d+(?:\.\d+)?)%/g;
+    let m;
+    while ((m = re.exec(str)) !== null)
+        stops.push({ color: m[1], pos: parseFloat(m[2]) / 100 });
+    stops.sort((a, b) => a.pos - b.pos);
+    return stops;
+}
+
+// 256x2 canvas gradient sampled by the ribbon shader across the
+// sheet width. Re-rasterised only when the gradient string changes.
+class GradientTexture {
+    constructor() {
+        this.canvas = document.createElement('canvas');
+        this.canvas.width = 256;
+        this.canvas.height = 2;
+        this.ctx = this.canvas.getContext('2d');
+        this.texture = new THREE.CanvasTexture(this.canvas);
+        this.texture.minFilter = THREE.LinearFilter;
+        this.texture.magFilter = THREE.LinearFilter;
+        this.texture.wrapS = THREE.RepeatWrapping;
+        this.applied = null;
+    }
+
+    apply(str) {
+        if (str === this.applied) return;
+        this.applied = str;
+        const stops = parseGradientStops(str);
+        if (stops.length < 2) return;
+        const grd = this.ctx.createLinearGradient(0, 0, 256, 0);
+        stops.forEach(s => grd.addColorStop(s.pos, s.color));
+        this.ctx.fillStyle = grd;
+        this.ctx.fillRect(0, 0, 256, 2);
+        this.texture.needsUpdate = true;
+    }
+
+    dispose() { this.texture.dispose(); }
+}
+
+// ─────────────────────────────────────────────
+// Per-network defaults
 // ─────────────────────────────────────────────
 function defaultNet(isA) {
     return {
+        // Layout
+        layout:          'tube',      // 'tube' | 'sheet'
+        sheetPhase:      0,           // initial sheet rotation, in turns
+        sheetCurl:       0,           // curvature across the sheet width
+        mode3D:          true,
+        cloth:           false,
+
+        // Path
         startX: isA ? -0.28 : -0.10,
         startY: isA ?  1.00 :  1.00,
         endX:   isA ?  0.92 :  0.84,
         endY:   isA ? -0.90 : -1.00,
         curveX: 0,
         curveY: 0,
+
+        // Shape
         twist:           isA ? 0.00 : 0.23,
         maxSpread:       isA ? 2.84 : 2.19,
         spreadCenter:    isA ? 0.66 : 0.59,
         spreadSharpness: isA ? 1.00 : 1.60,
         structuralNoise: isA ? 0.14 : 0.06,
-        lineColor:       '#51647B',
-        lineOpacity:     isA ? 0.72 : 0.64,
-        lineThickness:   0.018,   // world-space full width (~1.5 px default)
+
+        // Strands
         fiberCount:      80,
-        mode3D:          true,
-        cloth:           false,
+        lineThickness:   0.018,   // world-space full width (~1.5 px default)
+        lineOpacity:     isA ? 0.72 : 0.64,
+
+        // Colour
+        colorMode:       'solid',     // 'solid' | 'gradient'
+        lineColor:       '#51647B',
+        gradient:        STRIPE_GRADIENT,
+        gradientShift:   0,           // gradient offset along the length
+        gradientScroll:  0,           // gradient drift per second
+        harmonyScheme:   'analogous',
+        harmonyHue:      210,
+        harmonySat:      85,
+        harmonyLight:    68,
+
+        // Texture
+        lumJitter:       0,
+        opacityJitter:   0,
+        thicknessJitter: 0,
+        edgeFeather:     0,
+        endFade:         0,
+        sheen:           0,
     };
 }
 
 // ─────────────────────────────────────────────
+// Presets
+// ─────────────────────────────────────────────
+const PRESETS = {
+    'DataPulse': () => ({
+        global: defaultGlobal(),
+        netA:   defaultNet(true),
+        netB:   defaultNet(false),
+    }),
+
+    'Stripe Ribbon': () => ({
+        global: Object.assign(defaultGlobal(), {
+            backgroundColor:   '#FFFFFF',
+            particleSpawnRate: 0,
+            glow:              false,
+        }),
+        netA: Object.assign(defaultNet(true), {
+            layout: 'sheet', sheetPhase: -0.02, sheetCurl: 0.5,
+            startX: -0.78, startY: 1.32, endX: 0.78, endY: -1.30,
+            curveX: 0.20, curveY: 0.10,
+            twist: 0.5, maxSpread: 3.4, spreadCenter: 0.2,
+            spreadSharpness: 0.12, structuralNoise: 0.05,
+            fiberCount: 400, lineThickness: 0.024, lineOpacity: 0.48,
+            colorMode: 'gradient', gradient: STRIPE_GRADIENT,
+            gradientScroll: 0.01,
+            lumJitter: 0.22, opacityJitter: 0.5, thicknessJitter: 0.6,
+            edgeFeather: 0.35, sheen: 0.4,
+            harmonyHue: 25, harmonySat: 95, harmonyLight: 62,
+        }),
+        netB: Object.assign(defaultNet(false), {
+            layout: 'sheet', sheetPhase: -0.10, sheetCurl: 0.5,
+            startX: 0.05, startY: 1.32, endX: 1.05, endY: -1.30,
+            curveX: 0.22, curveY: 0.04,
+            twist: 0.5, maxSpread: 1.2, spreadCenter: 0.3,
+            spreadSharpness: 0.1, structuralNoise: 0.05,
+            fiberCount: 240, lineThickness: 0.02, lineOpacity: 0.32,
+            colorMode: 'gradient', gradient: STRIPE_GRADIENT_B,
+            gradientScroll: -0.008,
+            lumJitter: 0.22, opacityJitter: 0.5, thicknessJitter: 0.6,
+            edgeFeather: 0.4, sheen: 0.35,
+            harmonyHue: 290, harmonySat: 90, harmonyLight: 64,
+        }),
+    }),
+};
+
+// ─────────────────────────────────────────────
+// Ribbon shader
+// Per-vertex colour and alpha are computed here from
+// the strand's lateral coordinate (aU), its random
+// seed, its position along the length (aT) and how
+// squarely the sheet faces the camera (aFacing).
+// ─────────────────────────────────────────────
+const RIBBON_VERTEX = `
+    attribute float aU;
+    attribute float aSeed;
+    attribute float aT;
+    attribute float aFacing;
+
+    uniform vec3      uColor;
+    uniform sampler2D uGradient;
+    uniform float     uUseGradient;
+    uniform float     uOpacity;
+    uniform float     uLumJitter;
+    uniform float     uOpacityJitter;
+    uniform float     uEdgeFeather;
+    uniform float     uEndFade;
+    uniform float     uSheen;
+    uniform float     uGradientShift;
+    uniform float     uGradientScroll;
+    uniform float     uTime;
+
+    varying vec4 vColor;
+
+    void main() {
+        float gx = aU * 0.5 + 0.5 + aT * uGradientShift + uTime * uGradientScroll;
+        vec3 grad = texture2D(uGradient, vec2(gx, 0.5)).rgb;
+        vec3 col  = mix(uColor, grad, uUseGradient);
+
+        // Brushed-silk texture: per-strand luminance variation
+        float lum = (fract(aSeed * 7.31) - 0.5) * 2.0;
+        col *= 1.0 + uLumJitter * lum;
+
+        // Sheen: brighten toward white where the sheet turns edge-on
+        float graze = 1.0 - aFacing;
+        col = mix(col, vec3(1.0), uSheen * graze * graze);
+
+        float a = uOpacity;
+        a *= 1.0 - uOpacityJitter * fract(aSeed * 3.17);
+
+        // Feather the outer strands of the sheet
+        float feather = max(uEdgeFeather, 1e-4);
+        a *= 1.0 - smoothstep(1.0 - feather, 1.0, abs(aU));
+
+        // Fade both ends of the strand
+        float endFade = max(uEndFade, 1e-4);
+        a *= smoothstep(0.0, endFade, aT) * smoothstep(0.0, endFade, 1.0 - aT);
+
+        vColor = vec4(col, a);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }`;
+
+const RIBBON_FRAGMENT = `
+    varying vec4 vColor;
+    void main() {
+        if (vColor.a < 0.002) discard;
+        gl_FragColor = vColor;
+    }`;
+
+// ─────────────────────────────────────────────
 // Fiber
-// Rendered as a billboard ribbon (MeshBasicMaterial
-// + indexed triangle strip) so lineThickness works
-// on any GPU — WebGL doesn't support linewidth > 1.
+// One strand. Writes its screen-aligned ribbon
+// into the network's shared vertex buffers so the
+// whole network draws in a single call.
 // this.positions = centerline, read by particles.
 // ─────────────────────────────────────────────
 class Fiber {
-    constructor(material) {
+    constructor(index, shared) {
+        this.index     = index;
         this.maxPoints = POINTS_PER_FIBER;
         this.positions = new Float32Array(this.maxPoints * 3); // centerline
-        this.baseAngle = Math.random() * Math.PI * 2;
+        this.baseAngle = Math.random() * Math.PI * 2;          // tube layout
         this.noiseSeed = Math.random() * 100;
+        this.seed      = Math.random();
+        this.thickSeed = Math.random();
 
-        // Ribbon: 2 verts per centerline point (+ / − side)
-        this.ribbonPos = new Float32Array(this.maxPoints * 2 * 3);
+        // Sheet layout: lateral coordinate in [-1, 1]. The golden-ratio
+        // sequence keeps any prefix of fibers evenly spread across the
+        // sheet, so fiberCount can change without re-seeding.
+        this.u = ((index * GOLDEN) % 1) * 2 - 1;
 
-        const geo = new THREE.BufferGeometry();
-        geo.setAttribute('position',
-            new THREE.BufferAttribute(this.ribbonPos, 3));
-        geo.attributes.position.setUsage(THREE.DynamicDrawUsage);
+        this.shared     = shared;
+        this.vertOffset = index * VERTS_PER_FIBER;
 
-        // One quad (2 triangles) per segment
-        const idx = new Uint32Array((this.maxPoints - 1) * 6);
-        for (let i = 0; i < this.maxPoints - 1; i++) {
-            const a = i*2, b = i*2+1, c = (i+1)*2, d = (i+1)*2+1;
-            idx[i*6]   = a; idx[i*6+1] = b; idx[i*6+2] = c;
-            idx[i*6+3] = b; idx[i*6+4] = d; idx[i*6+5] = c;
+        const vo = this.vertOffset;
+        for (let i = 0; i < this.maxPoints; i++) {
+            const t = i / (this.maxPoints - 1);
+            for (let k = 0; k < 2; k++) {
+                const v = vo + i * 2 + k;
+                shared.u[v]    = this.u;
+                shared.seed[v] = this.seed;
+                shared.t[v]    = t;
+            }
         }
-        geo.setIndex(new THREE.BufferAttribute(idx, 1));
-
-        this.geometry = geo;
-        this.mesh = new THREE.Mesh(geo, material);
-        this.mesh.frustumCulled = false;
-        scene.add(this.mesh);
     }
 
     update(time, p) {
         this._centerline(time, p);
-        this._ribbon(Math.max(p.lineThickness * 0.5, 0.002));
-        this.geometry.attributes.position.needsUpdate = true;
+        const jitter = 1 + p.thicknessJitter * (this.thickSeed - 0.5) * 2;
+        this._ribbon(Math.max(p.lineThickness * 0.5 * jitter, 0.002));
     }
 
     _centerline(time, p) {
         const hw = WORLD_HALF_H * camera.aspect;
         const hh = WORLD_HALF_H;
+        const sheet = p.layout === 'sheet';
 
         // Bezier control points
         const ax = p.startX * hw, ay = p.startY * hh;
         const cx = p.endX   * hw, cy = p.endY   * hh;
         const bx = (ax + cx) * 0.5 + p.curveX * hw;
         const by = (ay + cy) * 0.5 + p.curveY * hh;
+
+        const facing = this.shared.facing;
+        const vo = this.vertOffset;
 
         for (let i = 0; i < this.maxPoints; i++) {
             const t  = i / (this.maxPoints - 1);
@@ -133,7 +354,7 @@ class Fiber {
             const spx = mt*mt*ax + 2*mt*t*bx + t*t*cx;
             const spy = mt*mt*ay + 2*mt*t*by + t*t*cy;
 
-            // Tangent → local right frame
+            // Tangent -> local right frame
             const tanX = 2*(1-t)*(bx-ax) + 2*t*(cx-bx);
             const tanY = 2*(1-t)*(by-ay) + 2*t*(cy-by);
             const tl   = Math.sqrt(tanX*tanX + tanY*tanY) || 1;
@@ -142,30 +363,64 @@ class Fiber {
             // Gaussian spread bell-curve
             const dt     = t - p.spreadCenter;
             const spread = p.maxSpread * Math.exp(-dt * dt * p.spreadSharpness * 10);
-
-            // Helical twist
-            const angle    = this.baseAngle + p.twist * t * Math.PI * 2;
-            const offRight = Math.cos(angle) * spread;
-            const offZ     = p.mode3D ? Math.sin(angle) * spread : 0;
-
-            // Organic noise (quieter at pinch)
             const noiseAmt = p.structuralNoise * spread;
-            const noiseR   = Math.sin(i*0.08 + this.noiseSeed + time*0.8)  * noiseAmt;
-            const noiseZ   = p.mode3D
-                ? Math.cos(i*0.10 - this.noiseSeed + time*0.6) * noiseAmt * 0.5
-                : 0;
 
-            this.positions[i*3]   = spx + (offRight + noiseR) * rX;
-            this.positions[i*3+1] = spy + (offRight + noiseR) * rY;
-            this.positions[i*3+2] = offZ + noiseZ;
+            let x, y, z, face;
+
+            if (sheet) {
+                // The sheet is a flat band of strands that rotates about
+                // the path tangent. L = in-sheet lateral direction,
+                // N = sheet normal. Perspective on the rotated sheet is
+                // what produces the pinch and fold-over.
+                const theta = (p.sheetPhase + p.twist * t) * TWO_PI;
+                const cs = Math.cos(theta), sn = Math.sin(theta);
+
+                const lateral = this.u * spread
+                    + Math.sin(i*0.08 + this.noiseSeed + time*0.8) * noiseAmt * 0.35;
+                // Curl gives the sheet a shallow U cross-section so the
+                // fold keeps some width when viewed edge-on.
+                const normalOff = p.mode3D
+                    ? Math.cos(i*0.10 - this.noiseSeed + time*0.6) * noiseAmt * 0.25
+                      + p.sheetCurl * spread * this.u * this.u
+                    : 0;
+
+                x = spx + lateral*cs*rX - normalOff*sn*rX;
+                y = spy + lateral*cs*rY - normalOff*sn*rY;
+                z = p.mode3D ? lateral*sn + normalOff*cs : 0;
+                face = Math.abs(cs);
+            } else {
+                // Helical twist around the path (tube layout)
+                const angle    = this.baseAngle + p.twist * t * TWO_PI;
+                const cs = Math.cos(angle), sn = Math.sin(angle);
+                const offRight = cs * spread;
+                const offZ     = p.mode3D ? sn * spread : 0;
+
+                // Organic noise (quieter at pinch)
+                const noiseR = Math.sin(i*0.08 + this.noiseSeed + time*0.8) * noiseAmt;
+                const noiseZ = p.mode3D
+                    ? Math.cos(i*0.10 - this.noiseSeed + time*0.6) * noiseAmt * 0.5
+                    : 0;
+
+                x = spx + (offRight + noiseR) * rX;
+                y = spy + (offRight + noiseR) * rY;
+                z = offZ + noiseZ;
+                face = Math.abs(cs);
+            }
+
+            this.positions[i*3]   = x;
+            this.positions[i*3+1] = y;
+            this.positions[i*3+2] = z;
+            facing[vo + i*2] = face;
+            facing[vo + i*2 + 1] = face;
         }
     }
 
     // Expand centerline to a screen-aligned ribbon of halfWidth
     _ribbon(halfW) {
         const c = this.positions;
-        const r = this.ribbonPos;
+        const r = this.shared.position;
         const n = this.maxPoints;
+        const base = this.vertOffset * 3;
 
         for (let i = 0; i < n; i++) {
             // Finite-difference tangent in XY
@@ -179,15 +434,10 @@ class Fiber {
             const nx = -ty / tl * halfW;
             const ny =  tx / tl * halfW;
 
-            const v0 = i * 6,  v1 = i * 6 + 3;   // two verts per point
+            const v0 = base + i * 6,  v1 = v0 + 3;   // two verts per point
             r[v0]   = c[i*3] + nx;  r[v0+1] = c[i*3+1] + ny;  r[v0+2] = c[i*3+2];
             r[v1]   = c[i*3] - nx;  r[v1+1] = c[i*3+1] - ny;  r[v1+2] = c[i*3+2];
         }
-    }
-
-    dispose() {
-        scene.remove(this.mesh);
-        this.geometry.dispose();
     }
 }
 
@@ -242,7 +492,7 @@ class ClothPanel {
 }
 
 // ─────────────────────────────────────────────
-// ParticleSystem  (unchanged — reads fiber.positions)
+// ParticleSystem  (reads fiber.positions)
 // ─────────────────────────────────────────────
 class ParticleSystem {
     constructor(fibers) {
@@ -281,6 +531,12 @@ class ParticleSystem {
         this.mesh = new THREE.Points(geo, this.material);
         this.mesh.frustumCulled = false;
         scene.add(this.mesh);
+    }
+
+    clear() {
+        this.pool.forEach(p => { p.active = false; p.fiber = null; });
+        this.alphas.fill(0);
+        this.mesh.geometry.attributes.alpha.needsUpdate = true;
     }
 
     spawn(progress = 0) {
@@ -333,13 +589,78 @@ class ParticleSystem {
 
 // ─────────────────────────────────────────────
 // Network
-// Pre-allocates MAX_FIBERS; visibility is toggled
-// by fiberCount so changes are instant & cheap.
+// All MAX_FIBERS strands share one geometry and one
+// draw call; fiberCount just moves the draw range.
+// Params are read fresh every frame, so presets and
+// pasted settings take effect without wiring.
 // ─────────────────────────────────────────────
 class Network {
     constructor(params) {
         this.params = params;
 
+        const V = MAX_FIBERS * VERTS_PER_FIBER;
+        this.shared = {
+            position: new Float32Array(V * 3),
+            facing:   new Float32Array(V),
+            u:        new Float32Array(V),
+            seed:     new Float32Array(V),
+            t:        new Float32Array(V),
+        };
+
+        const geo = new THREE.BufferGeometry();
+        const posAttr    = new THREE.BufferAttribute(this.shared.position, 3);
+        const facingAttr = new THREE.BufferAttribute(this.shared.facing, 1);
+        posAttr.setUsage(THREE.DynamicDrawUsage);
+        facingAttr.setUsage(THREE.DynamicDrawUsage);
+        geo.setAttribute('position', posAttr);
+        geo.setAttribute('aFacing',  facingAttr);
+        geo.setAttribute('aU',    new THREE.BufferAttribute(this.shared.u, 1));
+        geo.setAttribute('aSeed', new THREE.BufferAttribute(this.shared.seed, 1));
+        geo.setAttribute('aT',    new THREE.BufferAttribute(this.shared.t, 1));
+
+        const idx = new Uint32Array(MAX_FIBERS * INDICES_PER_FIBER);
+        for (let f = 0; f < MAX_FIBERS; f++) {
+            const vb = f * VERTS_PER_FIBER, ib = f * INDICES_PER_FIBER;
+            for (let i = 0; i < POINTS_PER_FIBER - 1; i++) {
+                const a = vb + i*2, b = a + 1, c = a + 2, d = a + 3;
+                idx[ib + i*6]   = a; idx[ib + i*6+1] = b; idx[ib + i*6+2] = c;
+                idx[ib + i*6+3] = b; idx[ib + i*6+4] = d; idx[ib + i*6+5] = c;
+            }
+        }
+        geo.setIndex(new THREE.BufferAttribute(idx, 1));
+        this.geometry = geo;
+
+        this.gradient = new GradientTexture();
+        this.gradient.apply(params.gradient);
+
+        this.ribbonMaterial = new THREE.ShaderMaterial({
+            uniforms: {
+                uColor:          { value: new THREE.Color(params.lineColor) },
+                uGradient:       { value: this.gradient.texture },
+                uUseGradient:    { value: 0 },
+                uOpacity:        { value: params.lineOpacity },
+                uLumJitter:      { value: 0 },
+                uOpacityJitter:  { value: 0 },
+                uEdgeFeather:    { value: 0 },
+                uEndFade:        { value: 0 },
+                uSheen:          { value: 0 },
+                uGradientShift:  { value: 0 },
+                uGradientScroll: { value: 0 },
+                uTime:           { value: 0 },
+            },
+            vertexShader:   RIBBON_VERTEX,
+            fragmentShader: RIBBON_FRAGMENT,
+            transparent: true,
+            depthWrite:  false,
+            side:        THREE.DoubleSide,
+            blending:    globalParams.glow ? THREE.AdditiveBlending : THREE.NormalBlending,
+        });
+
+        this.ribbonMesh = new THREE.Mesh(geo, this.ribbonMaterial);
+        this.ribbonMesh.frustumCulled = false;
+        scene.add(this.ribbonMesh);
+
+        // Cloth panels keep a flat solid-colour material
         this.lineMaterial = new THREE.MeshBasicMaterial({
             color:       new THREE.Color(params.lineColor),
             transparent: true,
@@ -349,11 +670,10 @@ class Network {
             side:        THREE.DoubleSide,
         });
 
-        // Pre-allocate full pool
         this.allFibers = Array.from({ length: MAX_FIBERS },
-            () => new Fiber(this.lineMaterial));
+            (_, i) => new Fiber(i, this.shared));
 
-        // One cloth panel per adjacent fiber pair (0&1, 2&3, …)
+        // One cloth panel per adjacent fiber pair (0&1, 2&3, ...)
         this.allPanels = Array.from({ length: Math.floor(MAX_FIBERS / 2) },
             (_, i) => new ClothPanel(
                 this.lineMaterial,
@@ -361,6 +681,8 @@ class Network {
                 this.allFibers[i * 2 + 1],
             ));
 
+        this._appliedCount = -1;
+        this._appliedCloth = null;
         this._applyCount();
 
         this.particles = new ParticleSystem(this.activeFibers);
@@ -371,28 +693,67 @@ class Network {
         this.particles.update();
     }
 
-    // Show only the first fiberCount fibers; update particle pool
+    get fiberCount() {
+        return Math.max(0, Math.min(MAX_FIBERS, Math.round(this.params.fiberCount)));
+    }
+
+    // Draw only the first fiberCount fibers; update particle pool
     _applyCount() {
-        const n = Math.round(this.params.fiberCount);
-        this.allFibers.forEach((f, i) => { f.mesh.visible = i < n; });
+        const n = this.fiberCount;
+        this.geometry.setDrawRange(0, n * INDICES_PER_FIBER);
         this.activeFibers = this.allFibers.slice(0, n);
         if (this.particles) this.particles.fibers = this.activeFibers;
+        this._appliedCount = n;
         this._applyCloth();
     }
 
     // Show panels only when cloth mode is on AND both paired fibers are active
     _applyCloth() {
-        const n    = Math.round(this.params.fiberCount);
+        const n     = this.fiberCount;
         const cloth = !!this.params.cloth;
         this.allPanels.forEach((panel, i) => {
             panel.mesh.visible = cloth && (i * 2 + 1) < n;
         });
+        this._appliedCloth = cloth;
+    }
+
+    _syncMaterials(time) {
+        const p = this.params;
+        const u = this.ribbonMaterial.uniforms;
+        const blend = globalParams.glow ? THREE.AdditiveBlending : THREE.NormalBlending;
+
+        this.gradient.apply(p.gradient);
+        u.uColor.value.set(p.lineColor);
+        u.uUseGradient.value    = p.colorMode === 'gradient' ? 1 : 0;
+        u.uOpacity.value        = p.lineOpacity;
+        u.uLumJitter.value      = p.lumJitter;
+        u.uOpacityJitter.value  = p.opacityJitter;
+        u.uEdgeFeather.value    = p.edgeFeather;
+        u.uEndFade.value        = p.endFade;
+        u.uSheen.value          = p.sheen;
+        u.uGradientShift.value  = p.gradientShift;
+        u.uGradientScroll.value = p.gradientScroll;
+        u.uTime.value           = time;
+
+        this.lineMaterial.color.set(p.lineColor);
+        this.lineMaterial.opacity = p.lineOpacity;
+
+        this.particles.material.uniforms.uColor.value.set(globalParams.particleColor);
+
+        [this.ribbonMaterial, this.lineMaterial, this.particles.material].forEach(m => {
+            if (m.blending !== blend) { m.blending = blend; m.needsUpdate = true; }
+        });
     }
 
     update(time) {
-        const n = Math.round(this.params.fiberCount);
+        const n = this.fiberCount;
+        if (n !== this._appliedCount || !!this.params.cloth !== this._appliedCloth)
+            this._applyCount();
+
         for (let i = 0; i < n; i++)
             this.allFibers[i].update(time, this.params);
+        this.geometry.attributes.position.needsUpdate = true;
+        this.geometry.attributes.aFacing.needsUpdate  = true;
 
         if (this.params.cloth) {
             const panels = Math.floor(n / 2);
@@ -402,10 +763,15 @@ class Network {
         for (let i = 0; i < globalParams.particleSpawnRate; i++)
             this.particles.spawn(0);
         this.particles.update();
+
+        this._syncMaterials(time);
     }
 
     dispose() {
-        this.allFibers.forEach(f => f.dispose());
+        scene.remove(this.ribbonMesh);
+        this.geometry.dispose();
+        this.ribbonMaterial.dispose();
+        this.gradient.dispose();
         this.allPanels.forEach(p => p.dispose());
         this.particles.dispose();
         this.lineMaterial.dispose();
@@ -427,24 +793,29 @@ window.onload = () => {
     const gui = new lil.GUI({ title: 'DataPulse' });
     gui.close();
 
-    // ───────── Settings copy / paste ─────────
-    function applyAllParams() {
-        renderer.setClearColor(globalParams.backgroundColor);
-        const mode = globalParams.glow ? THREE.AdditiveBlending : THREE.NormalBlending;
-        [netA, netB].forEach(net => {
-            const p = net.params;
-            net.lineMaterial.color.set(p.lineColor);
-            net.lineMaterial.opacity = p.lineOpacity;
-            net.lineMaterial.blending = mode;
-            net.lineMaterial.needsUpdate = true;
-            net.particles.material.uniforms.uColor.value.set(globalParams.particleColor);
-            net.particles.material.blending = mode;
-            net.particles.material.needsUpdate = true;
-            net._applyCount(); // also refreshes cloth
-        });
+    function refreshGui() {
         gui.controllersRecursive().forEach(c => c.updateDisplay());
     }
 
+    function applySettings(data) {
+        Object.assign(globalParams, data.global || {});
+        Object.assign(paramsA,      data.netA   || {});
+        Object.assign(paramsB,      data.netB   || {});
+        if (globalParams.particleSpawnRate === 0)
+            [netA, netB].forEach(net => net.particles.clear());
+        refreshGui();
+    }
+
+    // ───────── Presets ─────────
+    const fPre = gui.addFolder('Presets');
+    fPre.add(globalParams, 'preset', Object.keys(PRESETS)).name('Preset')
+        .onChange(name => {
+            const data = PRESETS[name]();
+            data.global.preset = name;
+            applySettings(data);
+        });
+
+    // ───────── Settings copy / paste ─────────
     async function copySettings() {
         const text = JSON.stringify(
             { global: globalParams, netA: paramsA, netB: paramsB }, null, 2);
@@ -464,10 +835,7 @@ window.onload = () => {
         let data;
         try { data = JSON.parse(text); }
         catch { alert('Invalid JSON.'); return; }
-        Object.assign(globalParams, data.global || {});
-        Object.assign(paramsA,      data.netA   || {});
-        Object.assign(paramsB,      data.netB   || {});
-        applyAllParams();
+        applySettings(data);
     }
 
     // ───────── Video recording ─────────
@@ -518,44 +886,65 @@ window.onload = () => {
     const recordCtrl = fIO.add(actions, 'record').name('Record 6s MP4');
 
     const fCol = gui.addFolder('Colors');
-    fCol.addColor(globalParams, 'backgroundColor').name('Background')
-        .onChange(c => renderer.setClearColor(c));
-    fCol.addColor(globalParams, 'particleColor').name('Particles')
-        .onChange(c => {
-            netA.particles.material.uniforms.uColor.value.set(c);
-            netB.particles.material.uniforms.uColor.value.set(c);
-        });
-    fCol.add(globalParams, 'glow').name('Glow')
-        .onChange(v => {
-            const mode = v ? THREE.AdditiveBlending : THREE.NormalBlending;
-            [netA.lineMaterial, netB.lineMaterial,
-             netA.particles.material, netB.particles.material]
-                .forEach(m => { m.blending = mode; m.needsUpdate = true; });
-        });
+    fCol.addColor(globalParams, 'backgroundColor').name('Background');
+    fCol.addColor(globalParams, 'particleColor').name('Particles');
+    fCol.add(globalParams, 'glow').name('Glow');
 
     const fPart = gui.addFolder('Particles');
     fPart.add(globalParams, 'particleSpeed',     0, 3,  0.01).name('Speed');
     fPart.add(globalParams, 'particleSpawnRate', 0, 20, 1).name('Spawn Rate');
 
-    function buildNetFolder(label, p, net) {
+    function buildNetFolder(label, p) {
         const f = gui.addFolder(label);
 
-        f.addColor(p, 'lineColor').name('Line Color')
-            .onChange(c => net.lineMaterial.color.set(c));
-        f.add(p, 'lineOpacity', 0, 1, 0.01).name('Opacity')
-            .onChange(v => { net.lineMaterial.opacity = v; });
+        f.add(p, 'layout', { Tube: 'tube', Sheet: 'sheet' }).name('Layout');
+        f.add(p, 'sheetPhase', -1, 1, 0.01).name('Sheet Phase');
+        f.add(p, 'sheetCurl', 0, 1, 0.01).name('Sheet Curl');
+        f.add(p, 'fiberCount', 0, MAX_FIBERS, 1).name('Fiber Count');
         f.add(p, 'lineThickness', 0.005, 0.5, 0.005).name('Line Thickness');
-        f.add(p, 'fiberCount', 1, MAX_FIBERS, 1).name('Fiber Count')
-            .onChange(() => net._applyCount());
+        f.add(p, 'lineOpacity', 0, 1, 0.01).name('Opacity');
         f.add(p, 'mode3D').name('3D Mode');
-        f.add(p, 'cloth').name('Cloth')
-            .onChange(() => net._applyCloth());
+        f.add(p, 'cloth').name('Cloth');
+
+        const fColor = f.addFolder('Color');
+        fColor.add(p, 'colorMode', { Solid: 'solid', Gradient: 'gradient' }).name('Mode');
+        fColor.addColor(p, 'lineColor').name('Solid Color');
+        fColor.add(p, 'gradient').name('Width Gradient');
+        fColor.add(p, 'gradientShift', -2, 2, 0.01).name('Shift Along');
+        fColor.add(p, 'gradientScroll', -0.2, 0.2, 0.001).name('Scroll Speed');
+
+        const fHarm = fColor.addFolder('Harmony');
+        fHarm.add(p, 'harmonyScheme', {
+            Analogous:             'analogous',
+            Complementary:         'complementary',
+            'Split Complementary': 'splitComplementary',
+            Triadic:               'triadic',
+            Tetradic:              'tetradic',
+        }).name('Scheme');
+        fHarm.add(p, 'harmonyHue',   0, 360, 1).name('Base Hue');
+        fHarm.add(p, 'harmonySat',   0, 100, 1).name('Saturation');
+        fHarm.add(p, 'harmonyLight', 0, 100, 1).name('Lightness');
+        fHarm.add({ apply() {
+            p.gradient  = harmonyGradient(
+                p.harmonyScheme, p.harmonyHue, p.harmonySat, p.harmonyLight);
+            p.colorMode = 'gradient';
+            refreshGui();
+        } }, 'apply').name('Apply Harmony');
+        fHarm.close();
+
+        const fTex = f.addFolder('Texture');
+        fTex.add(p, 'lumJitter',       0, 1, 0.01).name('Luminance Jitter');
+        fTex.add(p, 'opacityJitter',   0, 1, 0.01).name('Opacity Jitter');
+        fTex.add(p, 'thicknessJitter', 0, 1, 0.01).name('Thickness Jitter');
+        fTex.add(p, 'edgeFeather',     0, 1, 0.01).name('Edge Feather');
+        fTex.add(p, 'endFade',         0, 0.5, 0.01).name('End Fade');
+        fTex.add(p, 'sheen',           0, 1, 0.01).name('Sheen');
 
         const fPos = f.addFolder('Position');
-        fPos.add(p, 'startX', -1, 1, 0.01).name('Start X');
-        fPos.add(p, 'startY', -1, 1, 0.01).name('Start Y');
-        fPos.add(p, 'endX',   -1, 1, 0.01).name('End X');
-        fPos.add(p, 'endY',   -1, 1, 0.01).name('End Y');
+        fPos.add(p, 'startX', -1.5, 1.5, 0.01).name('Start X');
+        fPos.add(p, 'startY', -1.5, 1.5, 0.01).name('Start Y');
+        fPos.add(p, 'endX',   -1.5, 1.5, 0.01).name('End X');
+        fPos.add(p, 'endY',   -1.5, 1.5, 0.01).name('End Y');
         fPos.add(p, 'curveX', -1, 1, 0.01).name('Curve X');
         fPos.add(p, 'curveY', -1, 1, 0.01).name('Curve Y');
 
@@ -563,12 +952,20 @@ window.onload = () => {
         fShape.add(p, 'twist',           -4, 4, 0.01).name('Twist');
         fShape.add(p, 'maxSpread',        0, 5, 0.01).name('Max Spread');
         fShape.add(p, 'spreadCenter',     0, 1, 0.01).name('Spread Center');
-        fShape.add(p, 'spreadSharpness', 0.5, 8, 0.1).name('Spread Sharpness');
+        fShape.add(p, 'spreadSharpness',  0, 8, 0.1).name('Spread Sharpness');
         fShape.add(p, 'structuralNoise',  0, 2, 0.01).name('Organic Noise');
     }
 
-    buildNetFolder('Network A', paramsA, netA);
-    buildNetFolder('Network B', paramsB, netB);
+    buildNetFolder('Network A', paramsA);
+    buildNetFolder('Network B', paramsB);
+
+    // ?preset=Stripe%20Ribbon loads a preset on startup
+    const urlPreset = new URLSearchParams(location.search).get('preset');
+    if (urlPreset && PRESETS[urlPreset]) {
+        const data = PRESETS[urlPreset]();
+        data.global.preset = urlPreset;
+        applySettings(data);
+    }
 
     animate();
 };
@@ -581,6 +978,7 @@ const clock = new THREE.Clock();
 function animate() {
     requestAnimationFrame(animate);
     const time = clock.getElapsedTime();
+    renderer.setClearColor(globalParams.backgroundColor);
     netA.update(time);
     netB.update(time);
     renderer.render(scene, camera);
