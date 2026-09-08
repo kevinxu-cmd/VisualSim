@@ -24,7 +24,11 @@ The whole grid is one fragment shader on a full-screen quad, which removed the c
 - **Everything composites in linear light.** The OKLab ramp is evaluated per fragment, and bloom rolls off through a hue-preserving shoulder rather than clipping to white.
 - **A harmony accent rides the crest**, derived from the palette by color theory and softened toward pastel, so the leading edge reads as a chromatic event and not just as more light.
 
-Presets: Homage, Ripple Wall, Aurora Spiral, Silk Interference, Snake Raster, Dawn Drift, Diamond Sweep.
+- **A size ramp** drops the field and draws the same small grid five times in a row, at 10, 14, 20, 32 and 48 px.
+All five share one `uFront`, so a frozen frame compares one wave state across scales instead of comparing five moments.
+`Ramp Scale` magnifies the row without touching the proportions between the specimens.
+
+Presets: Homage, Size Ramp, Ripple Wall, Aurora Spiral, Silk Interference, Snake Raster, Dawn Drift, Diamond Sweep.
 `?preset=Aurora%20Spiral` loads one on startup.
 
 ## index-spinner.html - the spinner

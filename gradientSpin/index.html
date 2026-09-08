@@ -6,9 +6,15 @@
 <style>
     html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #07070c; font-family: monospace; }
     canvas { display: block; }
+    #ramp-labels { position: fixed; inset: 0; pointer-events: none; }
+    #ramp-labels span {
+        position: absolute; transform: translateX(-50%);
+        font: 10px/1 monospace; letter-spacing: 0.06em;
+    }
 </style>
 </head>
 <body>
+<div id="ramp-labels"></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19"></script>
 <script>
@@ -148,6 +154,37 @@ const GRADIENTS = {
         ['#F8DDC9', 0], ['#E7B4B5', 0.26], ['#B98BB8', 0.5],
         ['#6E6BAE', 0.75], ['#33356B', 1],
     ],
+
+    // ── from the portfolio ──
+    // Three swatch strips lifted off echomode.io's case-study cards, sampled
+    // from the screenshots rather than eyeballed, and one built from the
+    // site's own Framer design tokens. The strips open on the same #9E9E9E
+    // that separates the cards there; it is kept so the ramps match the page.
+    // deep navy climbing through cornflower into an almost-white blue
+    harbor: [
+        ['#9E9E9E', 0],     ['#0E1B2D', 0.167], ['#2B4DCF', 0.333],
+        ['#4E81ED', 0.5],   ['#71A4F3', 0.667], ['#A5C4F5', 0.833],
+        ['#DEEAFC', 1],
+    ],
+    // the full spectrum strip: coral and amber through mint into violet
+    prism: [
+        ['#9E9E9E', 0],   ['#ED7B69', 0.1], ['#EF94A3', 0.2],
+        ['#F1A284', 0.3], ['#F2A948', 0.4], ['#F6CE51', 0.5],
+        ['#96E4AA', 0.6], ['#75CDDD', 0.7], ['#609BF0', 0.8],
+        ['#8779E8', 0.9], ['#BD9CF0', 1],
+    ],
+    // Michigan navy lightening into haze, closed by a maize accent
+    maize: [
+        ['#9D9D9D', 0],     ['#0B264A', 0.143], ['#25497C', 0.286],
+        ['#385988', 0.429], ['#6889B1', 0.571], ['#9BB5D2', 0.714],
+        ['#D1DFEC', 0.857], ['#F6CC46', 1],
+    ],
+    // echomode.io itself: the warm off-white ground and mint tint falling
+    // through the brand emerald into the near-black the site is built on
+    echo: [
+        ['#F6F3F0', 0],    ['#E8F7EC', 0.16], ['#0FAA77', 0.44],
+        ['#1E293B', 0.76], ['#0B0F1A', 1],
+    ],
 };
 
 const PATTERN_IDS = {
@@ -155,6 +192,12 @@ const PATTERN_IDS = {
     spiral: 5, sweep: 6, interference: 7, turbulence: 8,
 };
 const AXIS_IDS = { row: 0, column: 1, path: 2, radial: 3, diagonal: 4 };
+
+// The size ramp's five specimens, in CSS px, and the gutter between them.
+// Icon sizes on purpose: the question the ramp answers is at what point the
+// grid stops resolving as a grid.
+const RAMP_SIZES  = [10, 14, 20, 32, 48];
+const RAMP_GUTTER = 24;
 
 // ─────────────────────────────────────────────
 // Shaders
@@ -181,6 +224,14 @@ uniform vec2  uGrid;            // (cols, rows)
 uniform float uGap;             // fraction of a cell eaten by the gutter
 uniform float uRadius;          // 0 = square corners, 1 = fully round
 uniform float uDiamond;         // 0 = box, 1 = diamond
+
+// Size ramp — the same grid drawn at several pixel sizes, side by side, so a
+// frozen frame compares one wave state across scales instead of across time.
+#define MAX_SPECIMENS 5
+uniform float uSpecimen;                // 0 = full-screen field, 1 = specimen row
+uniform int   uSpecCount;
+uniform vec3  uSpec[MAX_SPECIMENS];     // (centre x, centre y, box edge), CSS px
+uniform float uSpecPad;                 // px of slop around each box, for bloom
 
 // Wavefront
 uniform int   uPattern;
@@ -380,21 +431,70 @@ float waveAt(vec2 cell) {
     return waveFromDistance(patternDistance(cell));
 }
 
+// Vignette, tone shoulder and grain. Split out of main so a fragment that
+// lands between specimens is graded identically to one inside a cell.
+vec4 finish(vec3 col, vec2 uv) {
+    float vig = 1.0 - uVignette * pow(length(uv - 0.5) * 1.35, 2.2);
+    col *= clamp(vig, 0.0, 1.0);
+
+    vec3 srgb = linearToSrgb(shoulder(col));
+    srgb += (hash21(uv * uResolution + fract(uTime) * 91.7) - 0.5) * uGrain;
+
+    return vec4(clamp(srgb, 0.0, 1.0), 1.0);
+}
+
 void main() {
     vec2 uv = vUv;
-    vec2 g  = uv * uGrid;
-    vec2 cell = floor(g);
-    vec2 f    = fract(g);
+
+    // Grid coordinates, in cells. The field runs them straight across the
+    // viewport; specimen mode re-derives them inside whichever box the
+    // fragment landed in. Every box resolves to the same local coordinates, so
+    // one uFront drives all of them and the ramp is a size comparison rather
+    // than a phase comparison.
+    vec2  g;
+    float feather = 1.0;
+    if (uSpecimen > 0.5) {
+        vec2 px  = uv * uResolution;
+        bool hit = false;
+        for (int i = 0; i < MAX_SPECIMENS; i++) {
+            if (i >= uSpecCount) break;
+            vec2  rel  = px - uSpec[i].xy;
+            float edge = uSpec[i].z * 0.5;
+            float lim  = edge + uSpecPad;
+            if (abs(rel.x) <= lim && abs(rel.y) <= lim) {
+                g   = rel * uGrid / max(uSpec[i].z, 1e-4) + uGrid * 0.5;
+                // Bloom that is still above the quantisation floor when it
+                // reaches the edge of the slot would otherwise stop dead and
+                // leave a straight seam hanging in the background. Ramp the
+                // outer padding down instead. The box itself never feathers.
+                feather = 1.0 - smoothstep(edge + uSpecPad * 0.25, lim,
+                                           max(abs(rel.x), abs(rel.y)));
+                hit = true;
+                break;
+            }
+        }
+        if (!hit) { gl_FragColor = finish(uBgLin, uv); return; }
+    } else {
+        g = uv * uGrid;
+    }
+
+    // Clamping rather than wrapping lets a fragment in the padding keep
+    // measuring against the edge cell it is nearest, so bloom rolls off past
+    // the box instead of being sliced flat at it. Inside the grid the clamp is
+    // a no-op, so the field takes exactly the path it always did.
+    vec2 cell = clamp(floor(g), vec2(0.0), uGrid - 1.0);
+    vec2 f    = g - cell;
+    vec2 uvC  = g / uGrid;
 
     float wave = waveAt(cell);
 
     // ── where this cell sits on the color ramp ──
     float t;
-    if      (uColorAxis == 0) t = 1.0 - uv.y;                    // row, top → bottom
-    else if (uColorAxis == 1) t = uv.x;                          // column
+    if      (uColorAxis == 0) t = 1.0 - uvC.y;                   // row, top → bottom
+    else if (uColorAxis == 1) t = uvC.x;                         // column
     else if (uColorAxis == 2) t = patternDistance(cell);         // along the wave's path
-    else if (uColorAxis == 3) t = length(uv - 0.5) * 1.41421;    // radial
-    else                      t = (uv.x + 1.0 - uv.y) * 0.5;     // diagonal
+    else if (uColorAxis == 3) t = length(uvC - 0.5) * 1.41421;   // radial
+    else                      t = (uvC.x + 1.0 - uvC.y) * 0.5;   // diagonal
     t = clamp(t + uShift * wave, 0.0, 1.0);
 
     vec3 base = sampleRamp(t);
@@ -419,13 +519,7 @@ void main() {
     // Bloom: full inside the cell, falling off through the gutter.
     col += base * (exp(-max(d, 0.0) * uGlowRadius) * uGlow * pow(wave, 1.6));
 
-    float vig = 1.0 - uVignette * pow(length(uv - 0.5) * 1.35, 2.2);
-    col *= clamp(vig, 0.0, 1.0);
-
-    vec3 srgb = linearToSrgb(shoulder(col));
-    srgb += (hash21(uv * uResolution + fract(uTime) * 91.7) - 0.5) * uGrain;
-
-    gl_FragColor = vec4(clamp(srgb, 0.0, 1.0), 1.0);
+    gl_FragColor = finish(mix(uBgLin, col, feather), uv);
 }
 `;
 
@@ -535,6 +629,9 @@ const params = {
 
     rows:        44,
     squareCells: true,
+    specimen:    false,
+    rampScale:   1.00,
+    rampLabels:  true,
     cols:        78,
     gap:         0.22,
     radius:      1.00,
@@ -579,6 +676,10 @@ const uniforms = {
     uTime:        { value: 0 },
     uResolution:  { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
     uGrid:        { value: new THREE.Vector2(params.cols, params.rows) },
+    uSpecimen:    { value: 0 },
+    uSpecCount:   { value: RAMP_SIZES.length },
+    uSpec:        { value: RAMP_SIZES.map(() => new THREE.Vector3()) },
+    uSpecPad:     { value: 0 },
     uGap:         { value: params.gap },
     uRadius:      { value: params.radius },
     uDiamond:     { value: params.diamond },
@@ -691,11 +792,67 @@ function applyAccent() {
 // Grid sizing — square cells derive the column count from the viewport
 // ─────────────────────────────────────────────
 function updateGrid() {
-    if (params.squareCells) {
+    if (params.specimen) {
+        // A specimen is square by construction, so the viewport aspect has no
+        // say here — that is the whole difference between a specimen and the
+        // field it was lifted out of.
+        params.cols = params.rows;
+    } else if (params.squareCells) {
         const aspect = window.innerWidth / Math.max(window.innerHeight, 1);
         params.cols = Math.max(2, Math.round(params.rows * aspect));
     }
     uniforms.uGrid.value.set(params.cols, params.rows);
+    layoutRamp();
+}
+
+// ─────────────────────────────────────────────
+// Size ramp — five boxes in a row, centred, sharing a vertical centre line
+// ─────────────────────────────────────────────
+const labelsEl = document.getElementById('ramp-labels');
+
+function layoutRamp() {
+    uniforms.uSpecimen.value = params.specimen ? 1 : 0;
+
+    const sizes  = RAMP_SIZES.map(v => v * params.rampScale);
+    const gutter = RAMP_GUTTER * params.rampScale;
+    const total  = sizes.reduce((a, b) => a + b, 0) + gutter * (sizes.length - 1);
+
+    // vUv puts y = 0 at the bottom, so the shader's centre line is measured
+    // from there. It is the same number either way at exactly half height.
+    const cy = window.innerHeight / 2;
+    let x = (window.innerWidth - total) / 2;
+
+    const centres = sizes.map(sz => {
+        const cx = x + sz / 2;
+        x += sz + gutter;
+        return cx;
+    });
+
+    sizes.forEach((sz, i) => uniforms.uSpec.value[i].set(centres[i], cy, sz));
+
+    // Bloom needs about a cell and a half of room outside the box, but never
+    // enough to reach into the next slot.
+    const cellPx = Math.max(...sizes) / Math.max(params.rows, 2);
+    uniforms.uSpecPad.value = Math.min(cellPx * 1.5, gutter * 0.45);
+
+    drawRampLabels(sizes, centres, cy);
+}
+
+function drawRampLabels(sizes, centres, cy) {
+    if (!params.specimen || !params.rampLabels) { labelsEl.innerHTML = ''; return; }
+
+    // The ramp is as likely to be run on paper white as on near-black, so the
+    // labels take their ink from the background rather than assuming a dark one.
+    const [lr, lg, lb] = hexToLinear(params.background);
+    const lum = 0.2126 * lr + 0.7152 * lg + 0.0722 * lb;
+    labelsEl.style.color = lum > 0.18 ? 'rgba(0, 0, 0, 0.45)' : 'rgba(255, 255, 255, 0.42)';
+    // One baseline under the tallest specimen. Hanging each label off its own
+    // box staircases them, which reads as five separate things instead of one
+    // ramp.
+    const top = cy + Math.max(...sizes) / 2 + uniforms.uSpecPad.value * 0.5 + 14;
+    labelsEl.innerHTML = RAMP_SIZES.map((px, i) =>
+        `<span style="left:${centres[i]}px;top:${top}px">${px}</span>`
+    ).join('');
 }
 
 // ─────────────────────────────────────────────
@@ -711,6 +868,67 @@ const PRESETS = {
         dim: 0.10, lift: 1.0, swell: 0.0, shift: 0.0,
         colorAxis: 'row', accentHarmony: 'manual', accentAmount: 0,
         background: '#0b0b10', glow: 0.0, glowRadius: 3.5, grain: 0.012, vignette: 0.18,
+    },
+    // The same 3x3 at five icon sizes, one wave state, read side by side.
+    // Swell is near-flat on purpose: at 10px a breathing cell is just a
+    // smudge, and the ramp has to fail honestly to be worth anything.
+    'Size Ramp': {
+        palette: 'sunrise', reversePalette: false, pattern: 'diagonal',
+        bands: 0.75, period: 1.1, attack: 0.525, decay: 0.445, gamma: 0.9,
+        rows: 3, squareCells: true, gap: 0.175, radius: 0.595, diamond: 0.06,
+        dim: 0.12, lift: 1.4, swell: 0.01, shift: 0.25,
+        colorAxis: 'column', accentHarmony: 'split-cool', accentPastel: 0.70,
+        accentColor: '#b3b7e8', accentAmount: 0.35, accentSharp: 2.5,
+        background: '#ffffff', glow: 0.30, glowRadius: 3.5, grain: 0.014, vignette: 0.22,
+        specimen: true, rampScale: 1.1,
+    },
+    // Same motif on the other ground. A mark that only survives on paper white
+    // is only half tested, and the resting matrix needs more floor on black
+    // than it does on white to stay readable at all.
+    'Size Ramp Dark': {
+        palette: 'sunrise', reversePalette: false, pattern: 'diagonal',
+        bands: 0.75, period: 1.1, attack: 0.525, decay: 0.445, gamma: 0.9,
+        rows: 3, squareCells: true, gap: 0.175, radius: 0.595, diamond: 0.06,
+        dim: 0.22, lift: 1.4, swell: 0.01, shift: 0.25,
+        colorAxis: 'column', accentHarmony: 'split-cool', accentPastel: 0.70,
+        accentColor: '#b3b7e8', accentAmount: 0.35, accentSharp: 2.5,
+        background: '#07070c', glow: 0.35, glowRadius: 3.5, grain: 0.018, vignette: 0.28,
+        specimen: true, rampScale: 1.1,
+    },
+    // Does a fourth row survive 10px, or is 3x3 the ceiling? Only rows moves.
+    'Size Ramp 4x4': {
+        palette: 'sunrise', reversePalette: false, pattern: 'diagonal',
+        bands: 0.75, period: 1.1, attack: 0.525, decay: 0.445, gamma: 0.9,
+        rows: 4, squareCells: true, gap: 0.175, radius: 0.595, diamond: 0.06,
+        dim: 0.12, lift: 1.4, swell: 0.01, shift: 0.25,
+        colorAxis: 'column', accentHarmony: 'split-cool', accentPastel: 0.70,
+        accentColor: '#b3b7e8', accentAmount: 0.35, accentSharp: 2.5,
+        background: '#ffffff', glow: 0.30, glowRadius: 3.5, grain: 0.014, vignette: 0.22,
+        specimen: true, rampScale: 1.1,
+    },
+    // The shape axis, held against the rounded default: hard corners, no
+    // diamond, and a tighter gutter so the cells nearly touch.
+    'Size Ramp Sharp': {
+        palette: 'sunrise', reversePalette: false, pattern: 'diagonal',
+        bands: 0.75, period: 1.1, attack: 0.525, decay: 0.445, gamma: 0.9,
+        rows: 3, squareCells: true, gap: 0.120, radius: 0.0, diamond: 0.0,
+        dim: 0.12, lift: 1.4, swell: 0.01, shift: 0.25,
+        colorAxis: 'column', accentHarmony: 'split-cool', accentPastel: 0.70,
+        accentColor: '#b3b7e8', accentAmount: 0.35, accentSharp: 2.5,
+        background: '#ffffff', glow: 0.30, glowRadius: 3.5, grain: 0.014, vignette: 0.22,
+        specimen: true, rampScale: 1.1,
+    },
+    // Whether the ramp holds up because of the geometry or because of the warm
+    // palette. Cool ramp, warm accent, geometry untouched.
+    'Size Ramp Cool': {
+        palette: 'lagoon', reversePalette: false, pattern: 'diagonal',
+        bands: 0.75, period: 1.1, attack: 0.525, decay: 0.445, gamma: 0.9,
+        rows: 3, squareCells: true, gap: 0.175, radius: 0.595, diamond: 0.06,
+        dim: 0.12, lift: 1.4, swell: 0.01, shift: 0.25,
+        colorAxis: 'column', accentHarmony: 'split-warm', accentPastel: 0.70,
+        accentColor: '#f0c9a8', accentAmount: 0.35, accentSharp: 2.5,
+        background: '#ffffff', glow: 0.30, glowRadius: 3.5, grain: 0.014, vignette: 0.22,
+        specimen: true, rampScale: 1.1,
     },
     'Ripple Wall': {
         palette: 'bay', reversePalette: false, pattern: 'ripple',
@@ -796,6 +1014,11 @@ function applyAllParams() {
     uniforms.uShift.value       = params.shift;
     uniforms.uColorAxis.value   = AXIS_IDS[params.colorAxis];
     uniforms.uReversePalette.value = params.reversePalette ? 1 : 0;
+    // These two only ever moved from their GUI sliders, so a preset switch
+    // used to inherit whatever accent strength the previous preset left
+    // behind — the ramp changed but the crest kept the old hue and weight.
+    uniforms.uAccentAmount.value = params.accentAmount;
+    uniforms.uAccentSharp.value  = params.accentSharp;
     uniforms.uGlow.value        = params.glow;
     uniforms.uGlowRadius.value  = params.glowRadius;
     uniforms.uGrain.value       = params.grain;
@@ -864,6 +1087,11 @@ fG.add(params, 'cols', 3, 300, 1).name('Columns (unlocked)').onChange(v => {
 fG.add(params, 'gap',     0, 0.75, 0.005).name('Gap').onChange(v => uniforms.uGap.value = v);
 fG.add(params, 'radius',  0, 1,    0.005).name('Corner Radius').onChange(v => uniforms.uRadius.value = v);
 fG.add(params, 'diamond', 0, 1,    0.005).name('Diamond Morph').onChange(v => uniforms.uDiamond.value = v);
+
+const fSR = fG.addFolder('Size Ramp');
+fSR.add(params, 'specimen').name('Specimen Row').onChange(() => { updateGrid(); refreshGui(); });
+fSR.add(params, 'rampScale', 0.5, 12, 0.1).name('Ramp Scale').onChange(layoutRamp);
+fSR.add(params, 'rampLabels').name('Px Labels').onChange(layoutRamp);
 
 const fR = gui.addFolder('Response');
 fR.add(params, 'dim',   0, 1, 0.005).name('Resting Level').onChange(v => uniforms.uDim.value = v);
@@ -1048,7 +1276,7 @@ if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').m
 window.addEventListener('resize', () => {
     renderer.setSize(window.innerWidth, window.innerHeight);
     uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
-    updateGrid();
+    updateGrid();   // relays the ramp out too
     refreshGui();
 });
 

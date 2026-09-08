@@ -158,6 +158,27 @@ void main() {
 `;
 
 // ─────────────────────────────────────────────
+// Portfolio palettes
+// ─────────────────────────────────────────────
+// The four ramps sampled off echomode.io, reduced to this simulator's four
+// slots. The canonical full-stop copies live in gradientSpin/index.html, which
+// carries them at 5 to 11 stops each; these are hand-picked stops ordered
+// darkest to lightest, not an even resample, so each ramp keeps its own story
+// rather than averaging into mush. The #9E9E9E card separator the full strips
+// open on is dropped here, since a neutral grey would eat a quarter of a
+// four-slot ramp.
+//
+// Note that 'prism' has no dark end - its darkest stop sits at a relative
+// luminance of 0.25 - so it reads flatter here than the other three. That is
+// the strip's own nature, not the reduction.
+const PORTFOLIO_PALETTES = {
+    harbor: ['#0E1B2D', '#2B4DCF', '#71A4F3', '#DEEAFC'],
+    prism:  ['#8779E8', '#ED7B69', '#F2A948', '#96E4AA'],
+    maize:  ['#0B264A', '#25497C', '#9BB5D2', '#F6CC46'],
+    echo:   ['#0B0F1A', '#1E293B', '#0FAA77', '#F6F3F0'],
+};
+
+// ─────────────────────────────────────────────
 // Renderer / scene
 // ─────────────────────────────────────────────
 const renderer = new THREE.WebGLRenderer({ antialias: false });
@@ -173,6 +194,7 @@ const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 // ─────────────────────────────────────────────
 const params = {
     // Gradient palette (cycled with the noise fields)
+    palette:     'custom',
     color1:      '#ff8a3d',
     color2:      '#ffb86a',
     color3:      '#fff3d6',
@@ -250,10 +272,34 @@ scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material));
 const gui = new lil.GUI({ title: 'Shader Gradient' });
 
 const fColors = gui.addFolder('Gradient Colors');
-fColors.addColor(params, 'color1').name('Color 1').onChange(v => uniforms.uColor1.value.set(v));
-fColors.addColor(params, 'color2').name('Color 2').onChange(v => uniforms.uColor2.value.set(v));
-fColors.addColor(params, 'color3').name('Color 3').onChange(v => uniforms.uColor3.value.set(v));
-fColors.addColor(params, 'color4').name('Color 4').onChange(v => uniforms.uColor4.value.set(v));
+
+// Applying a palette overwrites all four slots; touching any one slot by hand
+// drops the dropdown back to 'custom', so the label never claims a ramp the
+// swatches no longer match.
+function applyPalette(name) {
+    const ramp = PORTFOLIO_PALETTES[name];
+    if (!ramp) return;
+    ramp.forEach((hex, i) => {
+        params[`color${i + 1}`] = hex;
+        uniforms[`uColor${i + 1}`].value.set(hex);
+    });
+    refreshGui();
+}
+
+function refreshGui() {
+    gui.controllersRecursive().forEach(c => c.updateDisplay());
+}
+
+fColors.add(params, 'palette', ['custom', ...Object.keys(PORTFOLIO_PALETTES)])
+    .name('Palette').onChange(applyPalette);
+
+for (let n = 1; n <= 4; n++) {
+    fColors.addColor(params, `color${n}`).name(`Color ${n}`).onChange(v => {
+        uniforms[`uColor${n}`].value.set(v);
+        params.palette = 'custom';
+        refreshGui();
+    });
+}
 
 const fBg = gui.addFolder('Background');
 fBg.add(params, 'noiseScale', 0.1, 5, 0.05).name('Noise Scale')
@@ -302,7 +348,7 @@ function applyAllParams() {
     uniforms.uGrain.value = params.grain;
     uniforms.uStreakCount.value = params.streakCount;
     syncStreaks();
-    gui.controllersRecursive().forEach(c => c.updateDisplay());
+    refreshGui();
 }
 
 const settingsIO = {

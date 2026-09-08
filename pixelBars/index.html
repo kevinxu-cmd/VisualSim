@@ -235,11 +235,33 @@ heightsTex.wrapT = THREE.ClampToEdgeWrapping;
 heightsTex.needsUpdate = true;
 
 // ─────────────────────────────────────────────
+// Portfolio palettes
+// ─────────────────────────────────────────────
+// The four ramps sampled off echomode.io, reduced to this simulator's four
+// slots. The canonical full-stop copies live in gradientSpin/index.html, which
+// carries them at 5 to 11 stops each; these are hand-picked stops ordered
+// darkest to lightest, not an even resample, so each ramp keeps its own story
+// rather than averaging into mush. The #9E9E9E card separator the full strips
+// open on is dropped here, since a neutral grey would eat a quarter of a
+// four-slot ramp.
+//
+// Note that 'prism' has no dark end - its darkest stop sits at a relative
+// luminance of 0.25 - so it reads flatter here than the other three. That is
+// the strip's own nature, not the reduction.
+const PORTFOLIO_PALETTES = {
+    harbor: ['#0E1B2D', '#2B4DCF', '#71A4F3', '#DEEAFC'],
+    prism:  ['#8779E8', '#ED7B69', '#F2A948', '#96E4AA'],
+    maize:  ['#0B264A', '#25497C', '#9BB5D2', '#F6CC46'],
+    echo:   ['#0B0F1A', '#1E293B', '#0FAA77', '#F6F3F0'],
+};
+
+// ─────────────────────────────────────────────
 // Parameters (defaults match the Wave template)
 // ─────────────────────────────────────────────
 const params = {
     template: 'wave',
 
+    palette: 'custom',
     color1: '#0a1a36',
     color2: '#1f5a9c',
     color3: '#6ed8e8',
@@ -397,6 +419,7 @@ updateVisualBounds();
 const TEMPLATES = {
     wave: {
         template: 'wave',
+        palette: 'custom',
         color1: '#0a1a36', color2: '#1f5a9c', color3: '#6ed8e8', color4: '#ffffff',
         cols: 70, rows: 25, colGap: 0.04, rowGap: 0.005,
         visualWidth: 1.00, visualXCenter: 0.29, visualHeight: 1.00,
@@ -412,6 +435,7 @@ const TEMPLATES = {
     },
     slope: {
         template: 'slope',
+        palette: 'custom',
         color1: '#070d22', color2: '#0e3a78', color3: '#3ea0e0', color4: '#f6fbff',
         cols: 24, rows: 24, colGap: 0.10, rowGap: 0.12,
         visualWidth: 0.58, visualXCenter: 0.56, visualHeight: 0.80,
@@ -507,10 +531,36 @@ fT.add({ wave:  () => applyTemplate('wave')  }, 'wave').name('Apply: Wave (spect
 fT.add({ slope: () => applyTemplate('slope') }, 'slope').name('Apply: Slope (mountain)');
 
 const fC = gui.addFolder('Palette');
-fC.addColor(params, 'color1').name('Color 1 (darkest)').onChange(v => uniforms.uColor1.value.set(v));
-fC.addColor(params, 'color2').name('Color 2').onChange(v => { uniforms.uColor2.value.set(v); if (params.accentHarmony !== 'manual') { deriveAccent(); refreshGui(); } });
-fC.addColor(params, 'color3').name('Color 3').onChange(v => uniforms.uColor3.value.set(v));
-fC.addColor(params, 'color4').name('Color 4 (lightest)').onChange(v => uniforms.uColor4.value.set(v));
+
+// Applying a palette overwrites all four slots. deriveAccent() has to run
+// afterwards: the harmony accent is a hue rotation of color2, so without it the
+// ramp would change while the accent kept the previous palette's hue.
+function applyPalette(name) {
+    const ramp = PORTFOLIO_PALETTES[name];
+    if (!ramp) return;
+    ramp.forEach((hex, i) => {
+        params[`color${i + 1}`] = hex;
+        uniforms[`uColor${i + 1}`].value.set(hex);
+    });
+    deriveAccent();
+    refreshGui();
+}
+
+fC.add(params, 'palette', ['custom', ...Object.keys(PORTFOLIO_PALETTES)])
+    .name('Palette').onChange(applyPalette);
+
+// Hand-editing any slot drops the dropdown back to 'custom', so the label never
+// claims a ramp the swatches no longer match.
+const SLOT_NAMES = ['Color 1 (darkest)', 'Color 2', 'Color 3', 'Color 4 (lightest)'];
+SLOT_NAMES.forEach((label, i) => {
+    const n = i + 1;
+    fC.addColor(params, `color${n}`).name(label).onChange(v => {
+        uniforms[`uColor${n}`].value.set(v);
+        params.palette = 'custom';
+        if (n === 2) deriveAccent();
+        refreshGui();
+    });
+});
 
 const fG = gui.addFolder('Grid');
 fG.add(params, 'cols',   8, MAX_COLS, 1).name('Columns').onChange(v => { uniforms.uCols.value = v; generateHeights(); });
