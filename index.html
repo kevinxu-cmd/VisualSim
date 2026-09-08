@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VisualSim</title>
+<meta name="description" content="A collection of self-contained generative visual simulators.">
+<style>
+    /* ─────────────────────────────────────────────
+       Tokens
+       ───────────────────────────────────────────── */
+    :root {
+        --bg:        #F6F7F9;
+        --surface:   #FFFFFF;
+        --line:      #E7EAEF;
+        --line-soft: #EEF1F5;
+        --ink:       #0B0F1A;
+        --ink-2:     #475569;
+        --ink-3:     #94A3B8;
+        --accent:    #FF8000;
+
+        /* Stronger than the built-in curves, which are too weak to read as
+           intentional at these durations. */
+        --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+
+        --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto,
+                Helvetica, Arial, sans-serif;
+        --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+
+    html { -webkit-text-size-adjust: 100%; }
+
+    body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: var(--sans);
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+    }
+
+    /* ─────────────────────────────────────────────
+       Page frame
+       ───────────────────────────────────────────── */
+    .wrap {
+        max-width: 1220px;
+        margin: 0 auto;
+        padding: 88px 32px 120px;
+    }
+
+    header { margin-bottom: 64px; }
+
+    h1 {
+        margin: 0;
+        font-size: 34px;
+        font-weight: 600;
+        letter-spacing: -0.021em;
+    }
+
+    .lede {
+        margin: 14px 0 0;
+        max-width: 60ch;
+        font-size: 16.5px;
+        line-height: 1.6;
+        color: var(--ink-2);
+        letter-spacing: -0.006em;
+    }
+
+    .note {
+        margin: 22px 0 0;
+        max-width: 70ch;
+        font-size: 13px;
+        line-height: 1.6;
+        color: var(--ink-3);
+    }
+    .note code {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--ink-2);
+        background: #EDF0F4;
+        padding: 2px 5px;
+        border-radius: 4px;
+    }
+
+    /* ─────────────────────────────────────────────
+       Grid
+       ───────────────────────────────────────────── */
+    .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+        gap: 28px;
+    }
+
+    .card {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        overflow: hidden;
+        transition: border-color 200ms ease,
+                    box-shadow  200ms ease,
+                    transform   200ms var(--ease-out);
+    }
+
+    /* The whole card is one hit target, but the fork link inside has to stay
+       separately clickable, and nesting <a> inside <a> is invalid. A stretched
+       pseudo-element on the title anchor covers the card instead. */
+    .card__title a::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        z-index: 1;
+    }
+
+    .card:active { transform: scale(0.995); }
+
+    .card:has(a:focus-visible) {
+        outline: 2px solid var(--ink);
+        outline-offset: 2px;
+    }
+
+    /* ─────────────────────────────────────────────
+       Thumbnail, and the live preview that layers over it
+       ───────────────────────────────────────────── */
+    .thumb {
+        position: relative;
+        aspect-ratio: 16 / 10;
+        background: #EDF0F4;
+        border-bottom: 1px solid var(--line-soft);
+        overflow: hidden;
+    }
+
+    .thumb img {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        /* Blurring the still while the live frame comes up over it stops the
+           swap reading as two separate images sitting on top of each other. */
+        transition: filter 260ms ease;
+    }
+    .card.is-live .thumb img { filter: blur(3px); }
+
+    .thumb iframe {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        border: 0;
+        opacity: 0;
+        /* Below the stretched title link, so the card stays clickable, and
+           inert regardless so the frame never eats the pointer. */
+        z-index: 0;
+        pointer-events: none;
+        transition: opacity 260ms var(--ease-out);
+    }
+    /* Exit is faster than enter: the user deciding can take its time, the
+       system responding should not. */
+    .thumb iframe.is-ready { opacity: 1; transition-duration: 260ms; }
+    .thumb iframe:not(.is-ready) { transition-duration: 160ms; }
+
+    /* ─────────────────────────────────────────────
+       Card text
+       ───────────────────────────────────────────── */
+    .meta {
+        display: flex;
+        flex-direction: column;
+        flex: 1;
+        padding: 18px 20px 16px;
+    }
+
+    .card__title {
+        margin: 0;
+        font-size: 15.5px;
+        font-weight: 600;
+        letter-spacing: -0.011em;
+    }
+    .card__title a {
+        color: var(--ink);
+        text-decoration: none;
+    }
+
+    .card__desc {
+        margin: 7px 0 0;
+        font-size: 13.5px;
+        line-height: 1.55;
+        color: var(--ink-2);
+    }
+
+    .foot {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+        margin-top: 16px;
+        padding-top: 13px;
+        border-top: 1px solid var(--line-soft);
+    }
+
+    .path {
+        font-family: var(--mono);
+        font-size: 11.5px;
+        color: var(--ink-3);
+        letter-spacing: -0.01em;
+    }
+
+    .fork {
+        position: relative;
+        z-index: 2;          /* above the stretched link */
+        font-size: 11.5px;
+        font-weight: 500;
+        color: var(--ink-3);
+        text-decoration: none;
+        white-space: nowrap;
+        transition: color 160ms ease;
+    }
+    .fork::before { content: '+ '; }
+
+    footer {
+        margin-top: 72px;
+        padding-top: 28px;
+        border-top: 1px solid var(--line);
+        font-size: 13px;
+        color: var(--ink-3);
+    }
+    footer a { color: var(--ink-2); text-decoration: none; }
+    footer a:hover { color: var(--ink); }
+
+    /* ─────────────────────────────────────────────
+       Entrance
+       ───────────────────────────────────────────── */
+    .card {
+        opacity: 0;
+        transform: translateY(8px);
+        animation: rise 380ms var(--ease-out) forwards;
+    }
+    @keyframes rise { to { opacity: 1; transform: none; } }
+
+    .card:nth-child(1) { animation-delay:   0ms; }
+    .card:nth-child(2) { animation-delay:  40ms; }
+    .card:nth-child(3) { animation-delay:  80ms; }
+    .card:nth-child(4) { animation-delay: 120ms; }
+    .card:nth-child(5) { animation-delay: 160ms; }
+    .card:nth-child(6) { animation-delay: 200ms; }
+    .card:nth-child(7) { animation-delay: 240ms; }
+    .card:nth-child(8) { animation-delay: 280ms; }
+
+    /* ─────────────────────────────────────────────
+       Hover is gated: a tap on a touch screen fires it too, which would leave
+       a card stuck in its hover state with no way out.
+       ───────────────────────────────────────────── */
+    @media (hover: hover) and (pointer: fine) {
+        .card:hover {
+            border-color: #D6DCE4;
+            box-shadow: 0 1px 2px rgba(11, 15, 26, 0.04),
+                        0 8px 24px rgba(11, 15, 26, 0.07);
+            transform: translateY(-2px);
+        }
+        .card:hover:active { transform: translateY(-2px) scale(0.995); }
+        .card:hover .fork { color: var(--ink-2); }
+        .fork:hover { color: var(--accent); }
+    }
+
+    @media (max-width: 640px) {
+        .wrap { padding: 56px 20px 80px; }
+        h1 { font-size: 28px; }
+        header { margin-bottom: 40px; }
+        .grid { grid-template-columns: 1fr; gap: 20px; }
+    }
+
+    /* Live previews are motion, so honoring the setting means not autoplaying
+       them at all. The stills stay, and the cards still work. */
+    @media (prefers-reduced-motion: reduce) {
+        .card {
+            opacity: 1;
+            transform: none;
+            animation: none;
+            transition: border-color 200ms ease, box-shadow 200ms ease;
+        }
+        .card:active, .card:hover, .card:hover:active { transform: none; }
+        .thumb img { transition: none; }
+    }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+    <header>
+        <h1>VisualSim</h1>
+        <p class="lede">
+            A collection of self-contained generative visual simulators, built for
+            making stills and loops rather than for shipping into a product.
+            Every simulator is a single HTML file with no build step, and every
+            parameter is on a panel you can open, drag and export.
+        </p>
+        <p class="note">
+            Hover a card to run it in place.
+            Open one for the full-screen version and its controls.
+            Several simulators read their own canvas back to export, so
+            <code>file://</code> will not do; serve the folder over a local server.
+        </p>
+    </header>
+
+    <main class="grid" id="grid">
+
+        <article class="card">
+            <div class="thumb" data-src="gradientSpin/index.html">
+                <img src="docs/home/gradient-spin.jpg" alt="Gradient Spin, a spiral wavefront across a dot grid" loading="lazy" decoding="async">
+            </div>
+            <div class="meta">
+                <h2 class="card__title"><a href="gradientSpin/index.html">Gradient Spin</a></h2>
+                <p class="card__desc">A CSS loading spinner blown up into a full-screen wavefront field.</p>
+                <div class="foot">
+                    <span class="path">gradientSpin/</span>
+                    <a class="fork" href="gradientSpin/index-spinner.html">spinner fork</a>
+                </div>
+            </div>
+        </article>
+
+        <article class="card">
+            <div class="thumb" data-src="datapulse/index.html">
+                <img src="docs/home/datapulse.jpg" alt="DataPulse, a braided ribbon of fibers" loading="lazy" decoding="async">
+            </div>
+            <div class="meta">
+                <h2 class="card__title"><a href="datapulse/index.html">DataPulse</a></h2>
+                <p class="card__desc">Braided fiber bundles flowing between two nodes, as a tube or as a brushed-silk sheet.</p>
+                <div class="foot">
+                    <span class="path">datapulse/</span>
+                </div>
+            </div>
+        </article>
+
+        <article class="card">
+            <div class="thumb" data-src="pixelBars/index.html">
+                <img src="docs/home/pixel-bars.jpg" alt="Pixel Bars, a pixel-art bar spectrum" loading="lazy" decoding="async">
+            </div>
+            <div class="meta">
+                <h2 class="card__title"><a href="pixelBars/index.html">Pixel Bars</a></h2>
+                <p class="card__desc">A pixel-art bar spectrum with a noise-blended palette and harmony accents.</p>
+                <div class="foot">
+                    <span class="path">pixelBars/</span>
+                </div>
+            </div>
+        </article>
+
+        <article class="card">
+            <div class="thumb" data-src="shaderGradient/index.html">
+                <img src="docs/home/shader-gradient.jpg" alt="Shader Gradient, a hard-edged horizon arc over a gradient" loading="lazy" decoding="async">
+            </div>
+            <div class="meta">
+                <h2 class="card__title"><a href="shaderGradient/index.html">Shader Gradient</a></h2>
+                <p class="card__desc">A four-stop gradient cut by hard-edge parabolic horizon arcs.</p>
+                <div class="foot">
+                    <span class="path">shaderGradient/</span>
+                    <a class="fork" href="shaderGradient/index-textured.html">textured fork</a>
+                </div>
+            </div>
+        </article>
+
+        <article class="card">
+            <div class="thumb" data-src="particleGlobe/index.html">
+                <img src="docs/home/particle-globe.jpg" alt="Particle Globe, a dotted globe with connection arcs" loading="lazy" decoding="async">
+            </div>
+            <div class="meta">
+                <h2 class="card__title"><a href="particleGlobe/index.html">Particle Globe</a></h2>
+                <p class="card__desc">A dotted globe with a procedural land mask and great-circle connection arcs.</p>
+                <div class="foot">
+                    <span class="path">particleGlobe/</span>
+                </div>
+            </div>
+        </article>
+
+        <article class="card">
+            <div class="thumb" data-src="fluidfolds/index.html">
+                <img src="docs/home/fluid-folds.jpg" alt="Fluid Folds, domain-warped noise shaded as folded metal" loading="lazy" decoding="async">
+            </div>
+            <div class="meta">
+                <h2 class="card__title"><a href="fluidfolds/index.html">Fluid Folds</a></h2>
+                <p class="card__desc">Domain-warped fractal noise, shaded as folded liquid metal.</p>
+                <div class="foot">
+                    <span class="path">fluidfolds/</span>
+                </div>
+            </div>
+        </article>
+
+        <article class="card">
+            <div class="thumb" data-src="WaveLightsSim/index.html">
+                <img src="docs/home/wave-lights.jpg" alt="Wave Lights, an iridescent horizon of interfering waves" loading="lazy" decoding="async">
+            </div>
+            <div class="meta">
+                <h2 class="card__title"><a href="WaveLightsSim/index.html">Wave Lights</a></h2>
+                <p class="card__desc">Three interfering wave trains lit as a thin iridescent horizon.</p>
+                <div class="foot">
+                    <span class="path">WaveLightsSim/</span>
+                </div>
+            </div>
+        </article>
+
+        <article class="card">
+            <div class="thumb" data-src="EchoLogomarkVisual/logomark-bg-builder.html">
+                <img src="docs/home/logomark-builder.jpg" alt="Logomark Background Builder, a tiling logomark over a gradient" loading="lazy" decoding="async">
+            </div>
+            <div class="meta">
+                <h2 class="card__title"><a href="EchoLogomarkVisual/logomark-bg-builder.html">Logomark Background Builder</a></h2>
+                <p class="card__desc">A tiling logomark pattern over a configurable gradient, exported as PNG or WebP.</p>
+                <div class="foot">
+                    <span class="path">EchoLogomarkVisual/</span>
+                </div>
+            </div>
+        </article>
+
+    </main>
+
+    <footer>
+        Four <a href="https://github.com/kevinxu-cmd/VisualSim#portfolio-palettes">portfolio
+        palettes</a> are shared across the simulators, so a still pulled from one sits
+        next to a still pulled from another. Full notes in the
+        <a href="https://github.com/kevinxu-cmd/VisualSim#readme">README</a>.
+    </footer>
+
+</div>
+
+<script>
+// ─────────────────────────────────────────────
+// Live preview on hover
+//
+// Exactly one <iframe> is alive at any moment. Sweeping the cursor across the
+// grid must not spawn eight WebGL contexts, so nothing is created until the
+// pointer has settled on a card for INTENT_MS. On leave the frame fades but
+// survives for GRACE_MS, so drifting off a card and back does not pay the
+// reload.
+// ─────────────────────────────────────────────
+(() => {
+    const INTENT_MS = 180;   // pointer must settle before anything loads
+    const GRACE_MS  = 400;   // frame outlives the fade, in case you come back
+
+    const canHover = window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+    const reduced  = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (!canHover || reduced) return;
+
+    let current = null;      // { card, thumb, frame }
+    let intentTimer = null;
+    let graceTimer  = null;
+
+    function destroy() {
+        if (!current) return;
+        current.frame.remove();
+        current.card.classList.remove('is-live');
+        current = null;
+    }
+
+    // The simulators are served from the same origin, so their control panel
+    // can be reached and hidden. If that ever fails the preview just keeps its
+    // panel rather than breaking.
+    function hideChrome(frame) {
+        try {
+            const doc = frame.contentDocument;
+            if (!doc) return;
+            ['.lil-gui', 'aside.panel', '#gradient-bar', '#export-btn', '.canvas-overlay']
+                .forEach(sel => doc.querySelectorAll(sel)
+                    .forEach(el => el.style.display = 'none'));
+        } catch (e) { /* not reachable; leave the frame as it is */ }
+    }
+
+    // A loaded document is not a painted one: these are WebGL canvases that
+    // need a few frames before there is anything to look at. Reveal only once
+    // the frame's own rAF has ticked, so the crossfade never lands on a blank.
+    function revealWhenPainted(frame, card) {
+        let done = false;
+        const reveal = () => {
+            if (done || !current || current.frame !== frame) return;
+            done = true;
+            hideChrome(frame);
+            frame.classList.add('is-ready');
+            card.classList.add('is-live');
+        };
+        try {
+            const w = frame.contentWindow;
+            let n = 0;
+            const tick = () => (++n >= 3 ? reveal() : w.requestAnimationFrame(tick));
+            w.requestAnimationFrame(tick);
+        } catch (e) { /* fall through to the timer below */ }
+        setTimeout(reveal, 700);
+    }
+
+    function start(card) {
+        const thumb = card.querySelector('.thumb');
+        const src   = thumb && thumb.dataset.src;
+        if (!src) return;
+
+        const frame = document.createElement('iframe');
+        frame.setAttribute('title', '');
+        frame.setAttribute('aria-hidden', 'true');
+        frame.setAttribute('tabindex', '-1');
+        frame.setAttribute('scrolling', 'no');
+        frame.addEventListener('load', () => revealWhenPainted(frame, card));
+        frame.src = src;
+
+        thumb.appendChild(frame);
+        current = { card, thumb, frame };
+    }
+
+    document.querySelectorAll('.card').forEach(card => {
+        card.addEventListener('pointerenter', () => {
+            clearTimeout(graceTimer);
+
+            // Already showing this one: cancel the pending teardown and stay.
+            if (current && current.card === card) {
+                current.frame.classList.add('is-ready');
+                card.classList.add('is-live');
+                return;
+            }
+
+            clearTimeout(intentTimer);
+            intentTimer = setTimeout(() => { destroy(); start(card); }, INTENT_MS);
+        });
+
+        card.addEventListener('pointerleave', () => {
+            clearTimeout(intentTimer);
+            if (!current || current.card !== card) return;
+
+            current.frame.classList.remove('is-ready');
+            card.classList.remove('is-live');
+            graceTimer = setTimeout(destroy, GRACE_MS);
+        });
+    });
+
+    // A backgrounded tab has nothing to preview.
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) { clearTimeout(intentTimer); destroy(); }
+    });
+})();
+</script>
+
+</body>
+</html>

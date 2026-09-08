@@ -14,7 +14,11 @@ cd VisualSim
 python3 -m http.server 8000
 ```
 
-Then open `http://localhost:8000/<folder>/index.html`.
+Then open `http://localhost:8000/`.
+
+The root is a homepage listing every simulator.
+Hovering a card runs that simulator live in place, so you can see one move before opening it.
+Individual simulators are still at `http://localhost:8000/<folder>/index.html` if you want to go straight there.
 
 A local server is required because the simulators load Three.js over the network and several read their own canvas back for PNG and video export, which `file://` blocks.
 
