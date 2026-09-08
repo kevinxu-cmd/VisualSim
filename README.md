@@ -14,7 +14,11 @@ cd VisualSim
 python3 -m http.server 8000
 ```
 
-Then open `http://localhost:8000/<folder>/index.html`.
+Then open `http://localhost:8000/`.
+
+The root is a homepage listing every simulator.
+Hovering a card runs that simulator live in place, so you can see one move before opening it.
+Individual simulators are still at `http://localhost:8000/<folder>/index.html` if you want to go straight there.
 
 A local server is required because the simulators load Three.js over the network and several read their own canvas back for PNG and video export, which `file://` blocks.
 
@@ -60,7 +64,7 @@ The whole grid becomes one fragment shader, which removes the ceiling that shape
   <img src="docs/gradient-spin-spinner.jpg" width="400" alt="Gradient Spin at spinner scale">
 </p>
 
-Both carry the same twenty palettes: the eight from the source verbatim, and twelve more each built on a named color relationship.
+Both carry the same twenty-four palettes: the eight from the source verbatim, twelve more each built on a named color relationship, and the four [portfolio ramps](#portfolio-palettes).
 The spinner draws them all at once as a contact sheet.
 
 ![The twenty Gradient Spin palettes](docs/gradient-spin-palettes.jpg)
@@ -218,6 +222,36 @@ A tiling logomark pattern over a configurable gradient, with controls for icon s
 Exports PNG or WebP.
 
 ![Logomark background pattern](https://github.com/user-attachments/assets/6171e8fb-8d41-47f4-b478-f430b58a09dc)
+
+---
+
+## Portfolio palettes
+
+Four ramps sampled off echomode.io are shared across the simulators, so a still pulled from one sits next to a still pulled from another.
+Three are swatch strips lifted from the case-study cards, sampled from the screenshots rather than eyeballed.
+The fourth is built from the site's own design tokens.
+
+| Ramp | What it is |
+|---|---|
+| `harbor` | Deep navy climbing through cornflower into an almost-white blue |
+| `prism` | The full spectrum strip: coral and amber through mint into violet |
+| `maize` | Michigan navy lightening into haze, closed by a maize accent |
+| `echo` | The warm off-white ground and mint tint falling through the brand emerald into near-black |
+
+| Simulator | Where | Fidelity |
+|---|---|---|
+| Gradient Spin | `Palette` dropdown | Full, 5 to 11 stops each |
+| DataPulse | `Color > Portfolio Palette`, per network | Full, written into the gradient string |
+| Fluid Folds | `Palette > Portfolio Palette` | Full, written into the gradient field |
+| Logomark Background Builder | Swatch chips above the gradient bar | Full, loaded as stops |
+| Pixel Bars | `Palette` dropdown | Reduced to four hand-picked stops |
+| Shader Gradient | `Gradient Colors > Palette` | Reduced to four hand-picked stops |
+
+The last two hold exactly four colors, so their ramps are four stops chosen to keep each strip's character rather than an even resample of it.
+Editing any color by hand drops the control back to `custom`, so the label never claims a ramp the colors no longer are.
+
+The strips open on the `#9E9E9E` that separates the cards on the page, which is kept wherever a simulator takes the full stop list and dropped where only four slots exist.
+`prism` has no dark end, its darkest stop sitting at a relative luminance of 0.25, so it reads flatter in Pixel Bars than the other three.
 
 ---
 

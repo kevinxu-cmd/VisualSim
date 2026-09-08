@@ -64,6 +64,18 @@ const STRIPE_GRADIENT =
 const STRIPE_GRADIENT_B =
     'linear-gradient(90deg, #FFB24A 0%, #FF5E9E 40%, #A24CFF 75%, #4B5BFF 100%)';
 
+// The four ramps sampled off echomode.io, carried verbatim at their full stop
+// count - the ribbon rasterises any CSS gradient into a ramp texture, so
+// nothing has to be reduced. gradientSpin/index.html holds the canonical copies
+// as stop arrays; these are the same stops written as CSS. The leading #9E9E9E
+// is the card separator the strips open on, kept so the ramps match the page.
+const PORTFOLIO_PALETTES = {
+    harbor: 'linear-gradient(90deg, #9E9E9E 0%, #0E1B2D 16.7%, #2B4DCF 33.3%, #4E81ED 50%, #71A4F3 66.7%, #A5C4F5 83.3%, #DEEAFC 100%)',
+    prism:  'linear-gradient(90deg, #9E9E9E 0%, #ED7B69 10%, #EF94A3 20%, #F1A284 30%, #F2A948 40%, #F6CE51 50%, #96E4AA 60%, #75CDDD 70%, #609BF0 80%, #8779E8 90%, #BD9CF0 100%)',
+    maize:  'linear-gradient(90deg, #9D9D9D 0%, #0B264A 14.3%, #25497C 28.6%, #385988 42.9%, #6889B1 57.1%, #9BB5D2 71.4%, #D1DFEC 85.7%, #F6CC46 100%)',
+    echo:   'linear-gradient(90deg, #F6F3F0 0%, #E8F7EC 16%, #0FAA77 44%, #1E293B 76%, #0B0F1A 100%)',
+};
+
 // Hue offsets (degrees) from the base hue, spread evenly across the width.
 const HARMONY_SCHEMES = {
     analogous:          [-40, -20, 0, 20, 40],
@@ -797,10 +809,21 @@ window.onload = () => {
         gui.controllersRecursive().forEach(c => c.updateDisplay());
     }
 
+    // Which portfolio ramp each network's dropdown is currently claiming.
+    // Keyed by the network's params object so both the folder that owns the
+    // dropdown and applySettings below can reach it.
+    const paletteLabels = new WeakMap();
+
     function applySettings(data) {
         Object.assign(globalParams, data.global || {});
         Object.assign(paramsA,      data.netA   || {});
         Object.assign(paramsB,      data.netB   || {});
+        // A preset or a pasted blob brings its own gradient string, so no
+        // dropdown can still honestly claim a named ramp.
+        [paramsA, paramsB].forEach(p => {
+            const st = paletteLabels.get(p);
+            if (st) st.palette = 'custom';
+        });
         if (globalParams.particleSpawnRate === 0)
             [netA, netB].forEach(net => net.particles.clear());
         refreshGui();
@@ -909,9 +932,30 @@ window.onload = () => {
         const fColor = f.addFolder('Color');
         fColor.add(p, 'colorMode', { Solid: 'solid', Gradient: 'gradient' }).name('Mode');
         fColor.addColor(p, 'lineColor').name('Solid Color');
-        fColor.add(p, 'gradient').name('Width Gradient');
+
+        // Editing the string by hand, or applying a harmony, drops the palette
+        // dropdown back to 'custom' so its label never claims a ramp the
+        // gradient no longer is.
+        const paletteState = { palette: 'custom' };
+        paletteLabels.set(p, paletteState);
+        fColor.add(p, 'gradient').name('Width Gradient')
+            .onChange(() => { paletteState.palette = 'custom'; refreshGui(); });
         fColor.add(p, 'gradientShift', -2, 2, 0.01).name('Shift Along');
         fColor.add(p, 'gradientScroll', -0.2, 0.2, 0.001).name('Scroll Speed');
+
+        // Portfolio ramps write straight into the gradient string, the same
+        // way Apply Harmony does, so the free-text field stays the one source
+        // of truth for what the ribbon is actually sampling.
+        fColor.add(paletteState, 'palette',
+            ['custom', ...Object.keys(PORTFOLIO_PALETTES)])
+            .name('Portfolio Palette')
+            .onChange(name => {
+                const g = PORTFOLIO_PALETTES[name];
+                if (!g) return;
+                p.gradient  = g;
+                p.colorMode = 'gradient';
+                refreshGui();
+            });
 
         const fHarm = fColor.addFolder('Harmony');
         fHarm.add(p, 'harmonyScheme', {
@@ -928,6 +972,7 @@ window.onload = () => {
             p.gradient  = harmonyGradient(
                 p.harmonyScheme, p.harmonyHue, p.harmonySat, p.harmonyLight);
             p.colorMode = 'gradient';
+            paletteState.palette = 'custom';
             refreshGui();
         } }, 'apply').name('Apply Harmony');
         fHarm.close();
