@@ -122,6 +122,14 @@ The frame is split into a grid of cells.
 Each column has a height in whole cells, and each filled cell picks its color from a four-stop palette by blending its vertical position with FBM noise, so the bars read as pixel art rather than as a gradient ramp.
 
 A second noise field decides which cells take a pastel harmony accent, derived from the palette by color theory rather than picked by hand.
+The exception is `tangerine`, an orange ramp made here rather than sampled off the portfolio, which brings its own deep blue accent as a manual pick.
+Moving that accent afterwards drops the palette back to `custom`.
+
+The `Video Loop` folder exports a seamless loop at a chosen size, length and frame rate.
+It renders frame by frame at exact timestamps rather than recording the screen, and while it renders, the color and accent drift crossfades into a copy of itself one loop behind, so the last frame hands back to the first with no jump.
+The crossfade is equal-power, which keeps the contrast steady through the middle of the loop.
+Animated heights have no loop form, so they hold still in the export.
+H.264 MP4 is written where the browser can encode it, with VP9 or VP8 WebM as the fallback.
 
 <table>
 <tr>
@@ -267,13 +275,15 @@ What each one can export:
 | Gradient Spin (field) | ✅ | ✅ | ✅ | `?preset=` |
 | Gradient Spin (spinner) | ✅ | ✅ | ✅ | `?palette=` `?pattern=` `?size=` `?layout=` |
 | DataPulse | ✅ | | ✅ | `?preset=` |
-| Pixel Bars | ✅ | | | |
+| Pixel Bars | ✅ | | ✅ seamless loop | |
 | Particle Globe | ✅ | | | |
 | Shader Gradient (arcs) | | | | |
 | Shader Gradient (textured) | ✅ | | | |
 | Fluid Folds | | ✅ | | |
 | Wave Lights | | | | |
 | Logomark Background Builder | copies and pastes CSS, not settings | ✅ (and WebP) | | |
+
+Gradient Spin and DataPulse record 6 s of the screen in real time, so their clips do not loop; Pixel Bars renders one exact loop frame by frame instead.
 
 Settings copy and paste move a single JSON blob, so a look you like is one clipboard round trip away from being reproducible.
 Everywhere except the textured Shader Gradient, both fall back to a `prompt()` dialog when the Clipboard API is blocked, which it is in most embedded webviews.
