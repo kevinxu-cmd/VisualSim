@@ -70,6 +70,7 @@ uniform float uAccentEdgeBias;     // 0 = accents anywhere, 1 = accents only at 
 uniform float uSeed;
 uniform float uTimeScale;
 uniform float uAccentTimeScale;    // drift speed of the accent field (0 = frozen)
+uniform float uLoopLength;         // seconds; > 0 makes the drift repeat seamlessly (loop export)
 
 uniform sampler2D uHeightsTex; // 1D N×1, R = column height in [0,1]
 
@@ -94,6 +95,24 @@ float fbm(vec2 p) {
         a *= 0.5;
     }
     return v;
+}
+
+// FBM sampled at base + vel * uTime. With uLoopLength > 0 the drift repeats
+// every uLoopLength seconds: the field is crossfaded with a copy of itself one
+// loop behind, so the last frame hands back to the first. Both copies drift at
+// the same velocity, so the motion never reverses. The crossfade is
+// equal-power (cos/sin weights) around the FBM mean, which keeps the contrast
+// steady mid-loop instead of dipping where two unrelated fields average out,
+// and the smoothstep phase lets the blend ease in and out of the seam.
+const float FBM_MEAN = 0.46875; // 0.5 * (0.5 + 0.25 + 0.125 + 0.0625)
+float fbmDrift(vec2 base, vec2 vel) {
+    if (uLoopLength <= 0.0) return fbm(base + vel * uTime);
+    float phase = fract(uTime / uLoopLength);
+    float t = phase * uLoopLength;
+    float a = fbm(base + vel * t);
+    float b = fbm(base + vel * (t - uLoopLength));
+    float theta = 1.5707963 * smoothstep(0.0, 1.0, phase);
+    return FBM_MEAN + cos(theta) * (a - FBM_MEAN) + sin(theta) * (b - FBM_MEAN);
 }
 
 vec3 palette4(float t) {
@@ -176,8 +195,7 @@ void main() {
     }
 
     // FBM-driven color noise (animated when uTimeScale > 0)
-    vec2 ncoord = vec2(cx, cy) * uNoiseScale + uSeed + vec2(uTime * uTimeScale, 0.0);
-    float n = fbm(ncoord);
+    float n = fbmDrift(vec2(cx, cy) * uNoiseScale + uSeed, vec2(uTimeScale, 0.0));
 
     // Blend vertical ramp and noise to get the palette parameter t
     float t = mix(vPos, n, clamp(uNoiseAmount, 0.0, 1.0));
@@ -197,9 +215,8 @@ void main() {
     // tinted toward uAccentColor (default a soft warm pink that complements
     // a cool palette). Density sets how many cells qualify; edgeBias pulls
     // the accents toward the left/right ends of the visual.
-    vec2 acoord = vec2(cx, cy) * 0.55 + uSeed * 0.831 + 42.0
-                  + vec2(uTime * uAccentTimeScale * 0.6, uTime * uAccentTimeScale * 0.35);
-    float aNoise = fbm(acoord);
+    float aNoise = fbmDrift(vec2(cx, cy) * 0.55 + uSeed * 0.831 + 42.0,
+                            vec2(0.6, 0.35) * uAccentTimeScale);
     float thresh = mix(0.95, 0.35, clamp(uAccentDensity, 0.0, 1.0));
     float accentMask = smoothstep(thresh, thresh + 0.15, aNoise);
     float aEdge = pow(clamp(abs(xn), 0.0, 1.0), 2.0);   // near the left/right ends
@@ -253,6 +270,13 @@ const PORTFOLIO_PALETTES = {
     prism:  ['#8779E8', '#ED7B69', '#F2A948', '#96E4AA'],
     maize:  ['#0B264A', '#25497C', '#9BB5D2', '#F6CC46'],
     echo:   ['#0B0F1A', '#1E293B', '#0FAA77', '#F6F3F0'],
+};
+
+// Palettes made in this simulator rather than sampled off the portfolio. Each
+// carries its own accent, which applying the palette sets as a manual pick in
+// place of the harmony-derived one.
+const ACCENTED_PALETTES = {
+    tangerine: { ramp: ['#FF5500', '#FC7824', '#FE9B48', '#FDF8EF'], accent: '#2179B0' },
 };
 
 // ─────────────────────────────────────────────
@@ -337,6 +361,7 @@ const uniforms = {
     uSeed:        { value: params.heightSeed },
     uTimeScale:   { value: params.animateColors ? params.timeScale : 0 },
     uAccentTimeScale: { value: params.animateAccents ? params.timeScale : 0 },
+    uLoopLength:  { value: 0 },
     uHeightsTex:  { value: heightsTex },
 };
 
@@ -532,21 +557,34 @@ fT.add({ slope: () => applyTemplate('slope') }, 'slope').name('Apply: Slope (mou
 
 const fC = gui.addFolder('Palette');
 
-// Applying a palette overwrites all four slots. deriveAccent() has to run
-// afterwards: the harmony accent is a hue rotation of color2, so without it the
-// ramp would change while the accent kept the previous palette's hue.
+// Applying a palette overwrites all four slots. A palette with its own accent
+// sets it as a manual pick; otherwise deriveAccent() has to run afterwards: the
+// harmony accent is a hue rotation of color2, so without it the ramp would
+// change while the accent kept the previous palette's hue.
 function applyPalette(name) {
-    const ramp = PORTFOLIO_PALETTES[name];
-    if (!ramp) return;
-    ramp.forEach((hex, i) => {
+    const pal = PORTFOLIO_PALETTES[name] ? { ramp: PORTFOLIO_PALETTES[name] } : ACCENTED_PALETTES[name];
+    if (!pal) return;
+    pal.ramp.forEach((hex, i) => {
         params[`color${i + 1}`] = hex;
         uniforms[`uColor${i + 1}`].value.set(hex);
     });
-    deriveAccent();
+    if (pal.accent) {
+        params.accentHarmony = 'manual';
+        params.accentColor = pal.accent;
+        uniforms.uAccentColor.value.set(pal.accent);
+    } else {
+        deriveAccent();
+    }
     refreshGui();
 }
 
-fC.add(params, 'palette', ['custom', ...Object.keys(PORTFOLIO_PALETTES)])
+// A palette that owns its accent stops being that palette once the accent moves.
+function releaseAccentedPalette() {
+    if (ACCENTED_PALETTES[params.palette]) params.palette = 'custom';
+}
+
+fC.add(params, 'palette',
+    ['custom', ...Object.keys(PORTFOLIO_PALETTES), ...Object.keys(ACCENTED_PALETTES)])
     .name('Palette').onChange(applyPalette);
 
 // Hand-editing any slot drops the dropdown back to 'custom', so the label never
@@ -598,18 +636,26 @@ fM.add(params, 'hueJitter',      0, 0.5, 0.005).name('Per-Cell Jitter').onChange
 fM.add(params, 'topBoost',       0,  1,  0.01 ).name('Top Highlight').onChange(v => uniforms.uTopBoost.value = v);
 fM.add(params, 'topBoostRows',   1, 12,  0.1  ).name('Top Highlight Spread').onChange(v => uniforms.uTopBoostRows.value = v);
 
-const fAc = gui.addFolder('Accent (complementary)');
+const fAc = gui.addFolder('Accent');
 fAc.add(params, 'accentHarmony', {
     'Manual (pick below)': 'manual',
     'Complementary':       'complementary',
     'Split-Complementary': 'split-complementary',
     'Analogous':           'analogous',
     'Triadic':             'triadic',
-}).name('Harmony').onChange(() => { deriveAccent(); refreshGui(); });
+}).name('Harmony').onChange(v => {
+    if (v !== 'manual') releaseAccentedPalette();
+    deriveAccent();
+    refreshGui();
+});
 fAc.add(params, 'accentPastel', 0, 1, 0.005).name('Pastel Softness')
     .onChange(() => { if (params.accentHarmony !== 'manual') { deriveAccent(); refreshGui(); } });
-fAc.addColor(params, 'accentColor').name('Accent Color')
-    .onChange(v => { params.accentHarmony = 'manual'; uniforms.uAccentColor.value.set(v); refreshGui(); });
+fAc.addColor(params, 'accentColor').name('Accent Color').onChange(v => {
+    params.accentHarmony = 'manual';
+    releaseAccentedPalette();
+    uniforms.uAccentColor.value.set(v);
+    refreshGui();
+});
 fAc.add(params, 'accentAmount',   0, 1, 0.005).name('Strength').onChange(v => uniforms.uAccentAmount.value = v);
 fAc.add(params, 'accentDensity',  0, 1, 0.005).name('Density').onChange(v => uniforms.uAccentDensity.value = v);
 fAc.add(params, 'accentEdgeBias', 0, 1, 0.005).name('Edge Bias').onChange(v => uniforms.uAccentEdgeBias.value = v);
@@ -670,6 +716,127 @@ pasteCtrl = fIO.add(settingsIO, 'paste').name('Paste from clipboard');
 fIO.close();
 
 // ─────────────────────────────────────────────
+// Video loop export
+// ─────────────────────────────────────────────
+// Renders exactly one loop frame by frame at fixed timestamps, rather than
+// screen-recording in real time, so no frame is dropped or doubled and the
+// last frame hands back to the first. uLoopLength switches the shader's drift
+// into its repeating form for the duration of the render (see fbmDrift).
+// Frames are drawn by a second renderer on a detached canvas at the export
+// size, so the live view never resizes; it holds its last frame meanwhile.
+// Animated heights have no loop form, so they hold still in the export.
+// WebCodecs does the encoding and mediabunny, loaded on first use, writes the
+// file: H.264 MP4 where the browser can encode it, VP9/VP8 WebM otherwise.
+const MEDIABUNNY_URL = 'https://cdn.jsdelivr.net/npm/mediabunny@1.60.0/dist/bundles/mediabunny.min.mjs';
+const RECORD_LABEL = 'Record Loop';
+
+const loopExport = { size: '1920x1080', seconds: 10, fps: 60 };
+let exportJob = null;   // { canceled } while a loop render is in flight
+
+function loopSize() {
+    if (loopExport.size !== 'window') return loopExport.size.split('x').map(Number);
+    // The window's drawing buffer, scaled down to fit what H.264 levels allow
+    // (4096 px a side, 4K area) and rounded to the even sizes 4:2:0 needs.
+    const buf = renderer.getDrawingBufferSize(new THREE.Vector2());
+    const k = Math.min(1, 4096 / buf.x, 4096 / buf.y, Math.sqrt(3840 * 2160 / (buf.x * buf.y)));
+    return [Math.round(buf.x * k / 2) * 2, Math.round(buf.y * k / 2) * 2];
+}
+
+async function recordLoop() {
+    if (exportJob) { exportJob.canceled = true; return; }
+    if (typeof VideoEncoder === 'undefined') {
+        flashCtrl(recordCtrl, 'Unsupported here ✗', RECORD_LABEL);
+        return;
+    }
+    const job = exportJob = { canceled: false };
+    recordCtrl.name('Preparing…');
+    // Every control but this button is locked for the render: a change halfway
+    // would split the video into two looks and break the loop.
+    const locked = gui.controllersRecursive().filter(c => c !== recordCtrl && !c._disabled);
+    locked.forEach(c => c.disable());
+
+    const [width, height] = loopSize();
+    const { seconds, fps } = loopExport;
+    const frames = Math.round(seconds * fps);
+    let output = null;
+    let exportRenderer = null;
+    try {
+        const mb = await import(MEDIABUNNY_URL);
+        // Above 'very-high' (1.0) on purpose. Flat cells compress to little, but
+        // at 1.0 each key frame resets the compression noise, a faint pulse every
+        // 2 s and at the loop seam. 1.4 (H.264 QP 6) brings the step into a key
+        // frame down to an ordinary frame-to-frame change, at ~11 Mbps for 1080p60.
+        const quality = new mb.Quality(1.4);
+        const codec = await mb.getFirstEncodableVideoCodec(['avc', 'vp9', 'vp8'],
+            { width, height, quality, frameRate: fps });
+        if (!codec) throw new Error(`No encodable video codec at ${width}×${height}`);
+
+        const canvas = document.createElement('canvas');
+        exportRenderer = new THREE.WebGLRenderer({ canvas, antialias: false });
+        exportRenderer.setPixelRatio(1);
+        exportRenderer.setSize(width, height, false);
+
+        const format = codec === 'avc'
+            ? new mb.Mp4OutputFormat({ fastStart: 'in-memory' })
+            : new mb.WebMOutputFormat();
+        const source = new mb.CanvasSource(canvas, { codec, quality });
+        output = new mb.Output({ format, target: new mb.BufferTarget() });
+        output.addVideoTrack(source, { frameRate: fps });
+        await output.start();
+
+        uniforms.uLoopLength.value = seconds;
+        for (let i = 0; i < frames && !job.canceled; i++) {
+            uniforms.uTime.value = i / fps;
+            exportRenderer.render(scene, camera);
+            // add() snapshots the canvas synchronously, before the buffer clears
+            await source.add(i / fps, 1 / fps);
+            recordCtrl.name(`Rendering ${Math.floor((i + 1) / frames * 100)}% · cancel`);
+        }
+
+        if (job.canceled) {
+            await output.cancel();
+            flashCtrl(recordCtrl, 'Canceled', RECORD_LABEL);
+            return;
+        }
+        recordCtrl.name('Finishing…');
+        await output.finalize();
+
+        const blob = new Blob([output.target.buffer], { type: format.mimeType });
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement('a');
+        a.href = url;
+        a.download = `pixel-bars-loop-${width}x${height}-${seconds}s${format.fileExtension}`;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+        flashCtrl(recordCtrl, 'Saved ✓', RECORD_LABEL);
+    } catch (e) {
+        console.error('Loop export failed:', e);
+        if (output && output.state !== 'finalized') output.cancel().catch(() => {});
+        flashCtrl(recordCtrl, 'Export failed ✗', RECORD_LABEL);
+    } finally {
+        uniforms.uLoopLength.value = 0;
+        if (exportRenderer) { exportRenderer.dispose(); exportRenderer.forceContextLoss(); }
+        locked.forEach(c => c.enable());
+        exportJob = null;
+    }
+}
+
+const fL = gui.addFolder('Video Loop');
+fL.add(loopExport, 'size', {
+    '1920 × 1080':        '1920x1080',
+    '2560 × 1440':        '2560x1440',
+    '3840 × 2160 (4K)':   '3840x2160',
+    '1080 × 1080':        '1080x1080',
+    '1080 × 1350 (4:5)':  '1080x1350',
+    '1080 × 1920 (9:16)': '1080x1920',
+    'Match window':       'window',
+}).name('Size');
+fL.add(loopExport, 'seconds', 2, 30, 1).name('Length (s)');
+fL.add(loopExport, 'fps', [30, 60]).name('Frame Rate');
+const recordCtrl = fL.add({ record: recordLoop }, 'record').name(RECORD_LABEL);
+fL.close();
+
+// ─────────────────────────────────────────────
 // Resize + render loop
 // ─────────────────────────────────────────────
 window.addEventListener('resize', () => {
@@ -680,6 +847,9 @@ window.addEventListener('resize', () => {
 const clock = new THREE.Clock();
 let lastHeightUpdate = 0;
 function animate() {
+    requestAnimationFrame(animate);
+    if (exportJob) return;   // the loop export owns uTime until it finishes
+
     const t = clock.getElapsedTime();
     uniforms.uTime.value = t;
 
@@ -691,7 +861,6 @@ function animate() {
     }
 
     renderer.render(scene, camera);
-    requestAnimationFrame(animate);
 }
 animate();
 </script>
