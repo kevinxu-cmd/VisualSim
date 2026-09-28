@@ -473,6 +473,25 @@ const TEMPLATES = {
         accentColor: '#e8c0d0', accentHarmony: 'manual', accentPastel: 0.60,
         accentAmount: 0.0, accentDensity: 0.0, accentEdgeBias: 0.50,
     },
+    // The Wave shape, centered, in the tangerine ramp with a deeper blue accent
+    // than the palette's own. Its heights come from the Wave formula, so
+    // `template` stays 'wave'.
+    tangerine: {
+        template: 'wave',
+        palette: 'custom',
+        color1: '#FF5500', color2: '#FC7824', color3: '#FE9B48', color4: '#FDF8EF',
+        cols: 70, rows: 20, colGap: 0.04, rowGap: 0.005,
+        visualWidth: 1.00, visualXCenter: 0.50, visualHeight: 1.00,
+        heightBase: 0.135, heightVariance: 0.67, heightTrend: 0.235,
+        freqScale: 3.6, heightSeed: 91.22077976852206,
+        noiseScale: 2.0, noiseAmount: 0.375, hueJitter: 0.085, topBoost: 1.0, topBoostRows: 4.0,
+        topNarrow: 0.48, topRows: 2.0,
+        widthJitter: 0.0,
+        vertWidthVar: 0.86, vertWidthScale: 0.56,
+        accentColor: '#1775b0', accentHarmony: 'manual', accentPastel: 0.35,
+        accentAmount: 0.835, accentDensity: 0.735, accentEdgeBias: 0.67,
+        animateColors: true, animateAccents: true, animateHeights: false, timeScale: 1.0,
+    },
 };
 
 function applyTemplate(name) {
@@ -554,6 +573,7 @@ const gui = new lil.GUI({ title: 'Pixel Bars' });
 const fT = gui.addFolder('Template');
 fT.add({ wave:  () => applyTemplate('wave')  }, 'wave').name('Apply: Wave (spectrum)');
 fT.add({ slope: () => applyTemplate('slope') }, 'slope').name('Apply: Slope (mountain)');
+fT.add({ tangerine: () => applyTemplate('tangerine') }, 'tangerine').name('Apply: Tangerine (warm wave)');
 
 const fC = gui.addFolder('Palette');
 

@@ -138,7 +138,7 @@ H.264 MP4 is written where the browser can encode it, with VP9 or VP8 WebM as th
 </tr>
 </table>
 
-Two templates: **Wave**, a wide spectrum with bumpy heights across the full width, and **Slope**, a narrower mountain rising left to right.
+Three templates: **Wave**, a wide spectrum with bumpy heights across the full width, **Slope**, a narrower mountain rising left to right, and **Tangerine**, the Wave shape centered in the `tangerine` ramp with a deep blue accent.
 
 <details>
 <summary>Saved settings for the two frames above</summary>
@@ -220,6 +220,14 @@ Motion and fractal detail are the only two control groups, because everything el
 
 Three wave trains, one along X, one along Z and one diagonal, summed and lit so their interference pattern reads as a thin iridescent horizon rather than as a surface.
 
+The light's color cycles with depth, and the `Color` folder sets what it cycles through.
+The default is the original rainbow, a cosine palette whose `Color Separation` runs from white pulses through soft iridescence to evenly spaced vivid hues.
+The four [portfolio ramps](#portfolio-palettes), `aloud` and a five-color custom set run first stop to last and back, so there is no seam where the last color meets the first.
+`aloud` is only here: Aloud's hero gradient, lavender mist through dusty mauve into near-black, sampled from a screenshot and fit with six stops.
+A ramp is scaled to the rainbow's average brightness, so `Glow Intensity` keeps its meaning across palettes and a pale ramp like `prism` does not blow out to white.
+`Hue Shift`, `Saturation`, `Cycle Rate` and `Cycle Offset` apply to every palette.
+Editing a custom color while a named palette is active forks that palette into the custom set.
+
 ![Wave Lights](docs/wave-lights.jpg)
 
 ---
@@ -254,11 +262,13 @@ The fourth is built from the site's own design tokens.
 | Logomark Background Builder | Swatch chips above the gradient bar | Full, loaded as stops |
 | Pixel Bars | `Palette` dropdown | Reduced to four hand-picked stops |
 | Shader Gradient | `Gradient Colors > Palette` | Reduced to four hand-picked stops |
+| Wave Lights | `Color > Palette` | Full minus the grey separator, baked into a ramp |
 
 The last two hold exactly four colors, so their ramps are four stops chosen to keep each strip's character rather than an even resample of it.
 Editing any color by hand drops the control back to `custom`, so the label never claims a ramp the colors no longer are.
 
 The strips open on the `#9E9E9E` that separates the cards on the page, which is kept wherever a simulator takes the full stop list and dropped where only four slots exist.
+Wave Lights drops it too, because in additive light it reads as a grey flash rather than a divider.
 `prism` has no dark end, its darkest stop sitting at a relative luminance of 0.25, so it reads flatter in Pixel Bars than the other three.
 
 ---

@@ -39,8 +39,101 @@
         foldingOffset: 9.291,
         stepBase: 0.146,
         glowIntensity: 0.0085,
-        glowSpread: 5.1
+        glowSpread: 5.1,
+        palette: 'rainbow',
+        hueShift: 0,
+        saturation: 1.0,
+        cycleRate: 3.0,
+        cycleOffset: 0.0,
+        colorSeparation: 1.0,
+        // What the Custom Colors pickers show. Filled by syncCustomView().
+        custom1: '#000000',
+        custom2: '#000000',
+        custom3: '#000000',
+        custom4: '#000000',
+        custom5: '#000000'
     };
+
+    // --- Palettes ---
+    const TAU = Math.PI * 2;
+
+    function spread(hexes) {
+        return hexes.map((hex, i) => [hex, i / (hexes.length - 1)]);
+    }
+
+    // The four portfolio ramps shared across the simulators. Three of them open
+    // on the #9E9E9E card separator from echomode.io, dropped here because in
+    // additive light it reads as a grey flash rather than a divider, so the
+    // remaining stops are spread back over 0..1.
+    const PALETTES = {
+        harbor: spread(['#0E1B2D', '#2B4DCF', '#4E81ED', '#71A4F3', '#A5C4F5', '#DEEAFC']),
+        prism: spread(['#ED7B69', '#EF94A3', '#F1A284', '#F2A948', '#F6CE51',
+                       '#96E4AA', '#75CDDD', '#609BF0', '#8779E8', '#BD9CF0']),
+        maize: spread(['#0B264A', '#25497C', '#385988', '#6889B1', '#9BB5D2', '#D1DFEC', '#F6CC46']),
+        echo: [['#F6F3F0', 0], ['#E8F7EC', 0.16], ['#0FAA77', 0.44], ['#1E293B', 0.76], ['#0B0F1A', 1]],
+        // Only here, not shared. Aloud's hero gradient, lavender mist through
+        // dusty mauve into near-black, sampled top to bottom from a screenshot.
+        // Six stops fit the page's curve within 0.006 OKLab.
+        aloud: [['#F3E9F2', 0], ['#D9BCD4', 0.2], ['#A57598', 0.44], ['#4A334E', 0.69], ['#1E1623', 0.84], ['#0C090D', 1]]
+    };
+
+    const CUSTOM_KEYS = ['custom1', 'custom2', 'custom3', 'custom4', 'custom5'];
+
+    // The user's own colors, kept separately from the pickers so browsing the
+    // named palettes never overwrites them. Same starting set as Gradient Spin.
+    let customColors = ['#DBE3D0', '#8DB8A7', '#2D8E9A', '#154288', '#262C81'];
+
+    // --- Color Conversion ---
+    function hexToRgb(hex) {
+        const n = parseInt(hex.slice(1), 16);
+        return [(n >> 16) & 255, (n >> 8) & 255, n & 255].map(v => v / 255);
+    }
+
+    function rgbToHex(rgb) {
+        return '#' + rgb.map(v => Math.round(Math.min(Math.max(v, 0), 1) * 255).toString(16).padStart(2, '0')).join('');
+    }
+
+    function srgbToLinear(v) {
+        return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+    }
+
+    function linearToSrgb(v) {
+        const c = Math.min(Math.max(v, 0), 1);
+        return c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+    }
+
+    function hexToOklab(hex) {
+        const [r, g, b] = hexToRgb(hex).map(srgbToLinear);
+        const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+        const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+        const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+        return [
+            0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
+            1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
+            0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s
+        ];
+    }
+
+    function oklabToSrgb([l, a, b]) {
+        const lc = Math.pow(l + 0.3963377774 * a + 0.2158037573 * b, 3);
+        const mc = Math.pow(l - 0.1055613458 * a - 0.0638541728 * b, 3);
+        const sc = Math.pow(l - 0.0894841775 * a - 1.2914855480 * b, 3);
+        return [
+             4.0767416621 * lc - 3.3077115913 * mc + 0.2309699292 * sc,
+            -1.2684380046 * lc + 2.6097574011 * mc - 0.3413193965 * sc,
+            -0.0041960863 * lc - 0.7034186147 * mc + 1.7076147010 * sc
+        ].map(linearToSrgb);
+    }
+
+    // Stops always span exactly 0..1. Blending in OKLab, as Gradient Spin does,
+    // keeps a ramp from dipping muddy between two saturated stops.
+    function sampleStops(stops, labs, t) {
+        let j = 0;
+        while (j < stops.length - 2 && t > stops[j + 1][1]) j++;
+        const span = stops[j + 1][1] - stops[j][1];
+        const m = span > 1e-6 ? Math.min(Math.max((t - stops[j][1]) / span, 0), 1) : 0;
+        return oklabToSrgb([0, 1, 2].map(c => labs[j][c] + (labs[j + 1][c] - labs[j][c]) * m));
+    }
 
     // --- Three.js Setup ---
     const scene = new THREE.Scene();
@@ -49,6 +142,31 @@
     renderer.setPixelRatio(settings.dpr);
     renderer.setSize(window.innerWidth, window.innerHeight);
     document.body.appendChild(renderer.domElement);
+
+    // --- Palette Ramp ---
+    // Named and custom palettes are baked into a strip the shader reads once per
+    // march step, so the cost does not grow with the number of stops.
+    const RAMP_SIZE = 256;
+    const rampTexture = new THREE.DataTexture(new Uint8Array(RAMP_SIZE * 4), RAMP_SIZE, 1, THREE.RGBAFormat);
+    rampTexture.magFilter = THREE.LinearFilter;
+    rampTexture.minFilter = THREE.LinearFilter;
+
+    // Returns the gain that lifts the ramp's average luma to the rainbow's, which
+    // averages exactly 1. Matching the average rather than the peak keeps a pale
+    // ramp like prism from blowing out to white. The gain is capped at 4 so a
+    // palette picked dark on purpose stays dark instead of being pushed to grey.
+    function bakeRamp(stops) {
+        const labs = stops.map(([hex]) => hexToOklab(hex));
+        const data = rampTexture.image.data;
+        let lumaSum = 0;
+        for (let i = 0; i < RAMP_SIZE; i++) {
+            const bytes = sampleStops(stops, labs, i / (RAMP_SIZE - 1)).map(v => Math.round(v * 255));
+            data.set([...bytes, 255], i * 4);
+            lumaSum += (0.2126 * bytes[0] + 0.7152 * bytes[1] + 0.0722 * bytes[2]) / 255;
+        }
+        rampTexture.needsUpdate = true;
+        return 1 / Math.max(lumaSum / RAMP_SIZE, 0.25);
+    }
 
     // --- Uniforms ---
     const uniforms = {
@@ -68,7 +186,14 @@
         uFoldingOffset: { value: settings.foldingOffset },
         uStepBase: { value: settings.stepBase },
         uGlowIntensity: { value: settings.glowIntensity },
-        uGlowSpread: { value: settings.glowSpread }
+        uGlowSpread: { value: settings.glowSpread },
+        uUseRamp: { value: 0.0 },
+        uRamp: { value: rampTexture },
+        uRampGain: { value: 1.0 },
+        uCycleRate: { value: settings.cycleRate },
+        uCycleOffset: { value: settings.cycleOffset },
+        uColorSeparation: { value: settings.colorSeparation },
+        uColorMatrix: { value: new THREE.Matrix3() }
     };
 
     const vertexShader = `
@@ -95,11 +220,34 @@
         uniform float uStepBase;
         uniform float uGlowIntensity;
         uniform float uGlowSpread;
+        uniform float uUseRamp;          // 0 = rainbow formula, 1 = baked palette ramp
+        uniform sampler2D uRamp;
+        uniform float uRampGain;         // matches the ramp's average brightness to the rainbow's
+        uniform float uCycleRate;
+        uniform float uCycleOffset;      // fraction of one full color loop
+        uniform float uColorSeparation;  // phase gap between the rainbow's R, G and B
+        uniform mat3 uColorMatrix;       // hue shift then saturation, built on the CPU
+
+        const float TAU = 6.28318530718;
+        const float RAMP_SIZE = ${RAMP_SIZE}.0;
 
         float generateFineNoise(vec2 p) {
             vec3 p3  = fract(vec3(p.xyx) * 8.6231);
             p3 += dot(p3, p3.yzx + 67.92);
             return fract((p3.x + p3.y) * p3.z);
+        }
+
+        // Light color at a given march distance, on the rainbow's scale (0..2, averaging 1).
+        vec3 paletteAt(float dist) {
+            if (uUseRamp < 0.5) {
+                return 1.0 + cos(dist * uCycleRate + uCycleOffset * TAU + uColorSeparation * vec3(0.0, 1.0, 2.0));
+            }
+            // A ramp runs first stop to last and back, so there is no seam where
+            // the last color would jump to the first. One way takes one rainbow
+            // cycle, which keeps Cycle Rate meaning the same thing in both modes.
+            float loop = fract(dist * uCycleRate / TAU * 0.5 + uCycleOffset);
+            float t = 1.0 - abs(2.0 * loop - 1.0);
+            return uRampGain * texture2D(uRamp, vec2((t * (RAMP_SIZE - 1.0) + 0.5) / RAMP_SIZE, 0.5)).rgb;
         }
 
         void main() {
@@ -141,7 +289,7 @@
 
                 float distanceFade = smoothstep(36.5, 7.3, totalDistance);
 
-                vec3 paletteColor = 1.0 + cos(totalDistance * 3.0 + vec3(0.0, 1.0, 2.0));
+                vec3 paletteColor = max(uColorMatrix * paletteAt(totalDistance), 0.0);
 
                 finalColor.rgb += glowIntensity * mixedPattern * distanceFade * paletteColor;
             }
@@ -175,8 +323,99 @@
     window.addEventListener('resize', updateResolution);
     updateResolution();
 
+    // --- Color ---
+    // Hue rotation about the grey axis, then saturation toward Rec. 709 luma.
+    // Both are exact identities at their defaults, so the stock rainbow renders
+    // the same pixels it always has.
+    function updateColorMatrix() {
+        const angle = settings.hueShift * Math.PI / 180;
+        const c = Math.cos(angle), s = Math.sin(angle) / Math.sqrt(3), o = (1 - c) / 3;
+        const hue = new THREE.Matrix3().set(
+            c + o, o - s, o + s,
+            o + s, c + o, o - s,
+            o - s, o + s, c + o);
+
+        const k = settings.saturation, g = 1 - k;
+        const [wr, wg, wb] = [0.2126, 0.7152, 0.0722];
+        const saturation = new THREE.Matrix3().set(
+            k + g * wr, g * wg,     g * wb,
+            g * wr,     k + g * wg, g * wb,
+            g * wr,     g * wg,     k + g * wb);
+
+        uniforms.uColorMatrix.value.multiplyMatrices(saturation, hue);
+    }
+
+    // Five evenly spaced points around one rainbow cycle, on the ramp's 0..1
+    // scale, so forking the rainbow into custom colors starts from its hues.
+    function rainbowSamples() {
+        return [0, 1, 2, 3, 4].map(i => rgbToHex([0, 1, 2].map(ch =>
+            (1 + Math.cos(i / 5 * TAU + settings.colorSeparation * ch)) / 2)));
+    }
+
+    function currentStops() {
+        return settings.palette === 'custom' ? spread(customColors) : PALETTES[settings.palette];
+    }
+
+    // The pickers always show the colors on screen: the custom set, or five
+    // samples of whichever palette is active.
+    function syncCustomView() {
+        let view = customColors;
+        if (settings.palette === 'rainbow') {
+            view = rainbowSamples();
+        } else if (settings.palette !== 'custom') {
+            const stops = currentStops();
+            const labs = stops.map(([hex]) => hexToOklab(hex));
+            view = [0, 1, 2, 3, 4].map(i => rgbToHex(sampleStops(stops, labs, i / 4)));
+        }
+        CUSTOM_KEYS.forEach((key, i) => {
+            if (settings[key] === view[i]) return;
+            settings[key] = view[i];
+            customCtrls[i].updateDisplay();
+        });
+    }
+
+    function applyPalette() {
+        const isRainbow = settings.palette === 'rainbow';
+        uniforms.uUseRamp.value = isRainbow ? 0 : 1;
+        if (!isRainbow) uniforms.uRampGain.value = bakeRamp(currentStops());
+        separationCtrl.show(isRainbow);
+        syncCustomView();
+    }
+
+    // Editing a color while a named palette is active forks that palette into
+    // the custom set, so the label never claims a ramp the colors no longer are.
+    function editCustomColor(index, hex) {
+        if (settings.palette === 'custom') {
+            customColors[index] = hex;
+        } else {
+            customColors = CUSTOM_KEYS.map(key => settings[key]);
+            settings.palette = 'custom';
+            paletteCtrl.updateDisplay();
+        }
+        applyPalette();
+    }
+
     // --- GUI ---
     const gui = new lil.GUI({ title: 'Scene Settings' });
+
+    const fColor = gui.addFolder('Color');
+    const paletteCtrl = fColor.add(settings, 'palette', ['rainbow', ...Object.keys(PALETTES), 'custom']).name('Palette').onChange(applyPalette);
+    fColor.add(settings, 'hueShift', 0, 360, 1).name('Hue Shift').onChange(updateColorMatrix);
+    fColor.add(settings, 'saturation', 0.0, 2.0, 0.01).name('Saturation').onChange(updateColorMatrix);
+    fColor.add(settings, 'cycleRate', 0.0, 10.0, 0.01).name('Cycle Rate').onChange(v => uniforms.uCycleRate.value = v);
+    fColor.add(settings, 'cycleOffset', 0.0, 1.0, 0.001).name('Cycle Offset').onChange(v => uniforms.uCycleOffset.value = v);
+    const separationCtrl = fColor.add(settings, 'colorSeparation', 0.0, Math.PI, 0.01).name('Color Separation').onChange(v => {
+        uniforms.uColorSeparation.value = v;
+        syncCustomView();
+    });
+
+    const fCustom = fColor.addFolder('Custom Colors');
+    const customCtrls = CUSTOM_KEYS.map((key, i) =>
+        fCustom.addColor(settings, key).name(`Color ${i + 1}`).onChange(hex => editCustomColor(i, hex)));
+    fCustom.close();
+
+    updateColorMatrix();
+    applyPalette();
 
     const fRender = gui.addFolder('Rendering');
     fRender.add(settings, 'dpr', 0.5, 2.0, 0.1).name('Device Pixel Ratio').onChange(val => {
