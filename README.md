@@ -31,7 +31,7 @@ A local server is required because the simulators load Three.js over the network
 | 📊 | [Pixel Bars](#pixel-bars) | `pixelBars/` | A pixel-art bar spectrum with a noise-blended palette and harmony accents |
 | 🌅 | [Shader Gradient](#shader-gradient) | `shaderGradient/` | A four-stop gradient cut by hard-edge parabolic horizon arcs |
 | 🌍 | [Particle Globe](#particle-globe) | `particleGlobe/` | A dotted globe with a procedural land mask and great-circle connection arcs |
-| 🎽 | [Fluid Folds](#fluid-folds) | `fluidfolds/` | Domain-warped fractal noise shaded as folded liquid metal |
+| 🎽 | [Fluid Folds](#fluid-folds) | `fluidfolds/` | Domain-warped fractal noise shaded as folded liquid metal, plus a soft-light plate fork |
 | 🌊 | [Wave Lights](#wave-lights) | `WaveLightsSim/` | Three interfering wave trains lit as a thin iridescent horizon |
 | 🔷 | [Logomark Background Builder](#logomark-background-builder) | `EchoLogomarkVisual/` | A tiling logomark pattern over a configurable gradient, exported as PNG or WebP |
 
@@ -211,8 +211,27 @@ Great-circle arcs connect configurable endpoint pairs, each with its own color a
 
 Domain-warped fractal noise, shaded as folded liquid metal.
 Motion and fractal detail are the only two control groups, because everything else in the look falls out of the warp.
+A `Grain` folder adds film grain, off until you turn it up.
 
 ![Fluid Folds](https://github.com/user-attachments/assets/548edef0-24f7-4291-9173-3c57f6a481cf)
+
+`fluidfolds/index-plate.html` is a fork for a softer kind of fold: one large fold of light across a blurred plate, recreating Aloud's hero plate.
+The main page maps its fold field through a single gradient by brightness, so a frame is only ever two or three colors deep.
+The plate has seven named colors instead: purple, light purple, dark purple, reddish purple, dirty purple, a dark valley under the band, and the glow of the band itself.
+Six sit at elliptical anchors that blend into one another with soft seams, and the glow rides a curved band that is soft on one side, falls away across the crease on the other and ends in a rounded tip.
+
+![Fluid Folds plate fork](docs/fluid-folds-plate.jpg)
+
+The Aloud layout was fit to the reference image rather than placed by eye.
+Anchor positions, shapes and the band's curve were fit by gradient descent against a downsample of the reference, with the colors solved exactly by least squares at every step, and the result lands within about 1.7/255 RMS of it.
+The grain was measured off the reference too, for strength, for how much color it carries and for its texture.
+That texture is what makes it read as film rather than as soft noise: bright specks with dark rims two or three pixels out, which the fork reproduces by subtracting a ring of neighbors from each grain sample.
+`Crisp` sets how much.
+
+Motion is one slow loop, 30 seconds by default, that opens and closes on the fitted still.
+The plate flows on three long, divergence-free waves, so it swirls without bunching up, while the color anchors and the band drift on their own and the glow breathes.
+The main page's fold iteration does not drive it: that field is chaotic by design, and any warp from it strong enough to see creases a plate this soft into hairline streaks.
+`Layout` exposes every anchor and the band's three control points, and settings copy and paste as one JSON blob.
 
 ---
 
@@ -290,6 +309,7 @@ What each one can export:
 | Shader Gradient (arcs) | | | | |
 | Shader Gradient (textured) | ✅ | | | |
 | Fluid Folds | | ✅ | | |
+| Fluid Folds (plate) | ✅ | ✅ | | |
 | Wave Lights | | | | |
 | Logomark Background Builder | copies and pastes CSS, not settings | ✅ (and WebP) | | |
 
@@ -299,13 +319,14 @@ Settings copy and paste move a single JSON blob, so a look you like is one clipb
 Everywhere except the textured Shader Gradient, both fall back to a `prompt()` dialog when the Clipboard API is blocked, which it is in most embedded webviews.
 
 Both Gradient Spin forks honor `prefers-reduced-motion` and start paused on a static mid-sweep frame.
+The Fluid Folds plate fork does too, starting on its fitted still with the grain held.
 
 ## Repository layout
 
 ```
 datapulse/            index.html
 EchoLogomarkVisual/   logomark-bg-builder.html
-fluidfolds/           index.html
+fluidfolds/           index.html, index-plate.html
 gradientSpin/         index.html, index-spinner.html, README.md
 particleGlobe/        index.html
 pixelBars/            index.html

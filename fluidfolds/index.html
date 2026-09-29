@@ -182,7 +182,14 @@
         viewScale: 0.9193,
         detail: 0.7007,
         shiftRate: 0.834,
-        shiftAmp: 0.7005
+        shiftAmp: 0.7005,
+        // Grain is the plate fork's (index-plate.html), off by default here so
+        // the look is unchanged until it is asked for.
+        grain: 0,
+        grainSize: 0.75,
+        grainCrisp: 0.8,
+        grainColor: 0.2,
+        grainFps: 24
     };
 
     // -------------------------------------------------------------------------
@@ -204,6 +211,43 @@
         uniform float u_detail;
         uniform float u_shift_rate;
         uniform float u_shift_amp;
+
+        uniform float u_pixel_ratio;
+        uniform float u_grain;          // std dev in 8-bit levels
+        uniform float u_grain_size;     // CSS pixels
+        uniform float u_grain_crisp;
+        uniform float u_grain_color;
+        uniform float u_grain_seed;
+
+        float hash13(vec3 p3) {
+            p3 = fract(p3 * 0.1031);
+            p3 += dot(p3, p3.zyx + 31.32);
+            return fract((p3.x + p3.y) * p3.z);
+        }
+
+        float latticeNoise(vec2 cell, float seed) {
+            return (hash13(vec3(cell, seed)) - 0.5) * 3.4641;
+        }
+
+        // Bilinear lattice noise, restored to unit variance. See
+        // index-plate.html for why the lattice is rotated and the ring below.
+        float grainNoise(vec2 g, float seed) {
+            vec2 i = floor(g);
+            vec2 f = g - i;
+            float n00 = latticeNoise(i, seed);
+            float n10 = latticeNoise(i + vec2(1.0, 0.0), seed);
+            float n01 = latticeNoise(i + vec2(0.0, 1.0), seed);
+            float n11 = latticeNoise(i + vec2(1.0, 1.0), seed);
+            return mix(mix(n00, n10, f.x), mix(n01, n11, f.x), f.y) * 1.5;
+        }
+
+        float crispGrain(vec2 g, float seed) {
+            float ring = grainNoise(g + vec2( 1.5,   0.0),  seed)
+                       + grainNoise(g + vec2(-0.75,  1.299), seed)
+                       + grainNoise(g + vec2(-0.75, -1.299), seed);
+            return (grainNoise(g, seed) - u_grain_crisp * ring / 3.0)
+                 / sqrt(1.0 + u_grain_crisp * u_grain_crisp / 3.0);
+        }
 
         void main() {
             vec2 fragCoord = gl_FragCoord.xy;
@@ -237,6 +281,18 @@
             float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
             color = texture2D(u_gradient, vec2(clamp(luma, 0.0, 1.0), 0.5)).rgb;
 
+            if (u_grain > 0.0) {
+                float cell = max(u_grain_size * u_pixel_ratio, 0.25);
+                const mat2 ROT = mat2(0.8776, 0.4794, -0.4794, 0.8776);
+                vec2 g = ROT * gl_FragCoord.xy / cell;
+                vec3 nC = vec3(grainNoise(g, u_grain_seed + 101.0),
+                               grainNoise(g, u_grain_seed + 211.0),
+                               grainNoise(g, u_grain_seed + 307.0));
+                vec3 n = mix(vec3(crispGrain(g, u_grain_seed)), nC, u_grain_color);
+                float lum = dot(color, vec3(0.2126, 0.7152, 0.0722));
+                color = clamp(color + n * (u_grain / 255.0) * (0.8 + 0.5 * lum), 0.0, 1.0);
+            }
+
             gl_FragColor = vec4(color, 1.0);
         }
     `;
@@ -252,7 +308,13 @@
             u_view_scale: { value: config.viewScale },
             u_detail:     { value: config.detail },
             u_shift_rate: { value: config.shiftRate },
-            u_shift_amp:  { value: config.shiftAmp }
+            u_shift_amp:  { value: config.shiftAmp },
+            u_pixel_ratio: { value: renderer.getPixelRatio() },
+            u_grain:       { value: config.grain },
+            u_grain_size:  { value: config.grainSize },
+            u_grain_crisp: { value: config.grainCrisp },
+            u_grain_color: { value: config.grainColor },
+            u_grain_seed:  { value: 0 }
         }
     });
 
@@ -315,6 +377,17 @@
         fractalFolder.add(config, 'shiftAmp', 0.0, 1.5).name('Shift Amplitude')
             .onChange(v => material.uniforms.u_shift_amp.value = v);
 
+        const grainFolder = gui.addFolder('Grain');
+        grainFolder.add(config, 'grain', 0, 12, 0.1).name('Amount')
+            .onChange(v => material.uniforms.u_grain.value = v);
+        grainFolder.add(config, 'grainSize', 0.25, 3, 0.05).name('Size')
+            .onChange(v => material.uniforms.u_grain_size.value = v);
+        grainFolder.add(config, 'grainCrisp', 0, 1, 0.01).name('Crisp')
+            .onChange(v => material.uniforms.u_grain_crisp.value = v);
+        grainFolder.add(config, 'grainColor', 0, 1, 0.01).name('Color')
+            .onChange(v => material.uniforms.u_grain_color.value = v);
+        grainFolder.add(config, 'grainFps', 0, 60, 1).name('FPS (0 holds)');
+
         animate();
     };
 
@@ -330,7 +403,11 @@
 
     function animate() {
         requestAnimationFrame(animate);
-        material.uniforms.uTime.value = clock.getElapsedTime();
+        const t = clock.getElapsedTime();
+        material.uniforms.uTime.value = t;
+        if (config.grainFps > 0) {
+            material.uniforms.u_grain_seed.value = Math.floor(t * config.grainFps) % 997;
+        }
         renderer.render(scene, camera);
     }
     </script>
