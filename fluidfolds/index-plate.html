@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fluid Folds Plate</title>
+    <style>
+        body { margin: 0; padding: 0; overflow: hidden; background: #221827; }
+        canvas { display: block; width: 100vw; height: 100vh; }
+
+        #export-btn {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(8px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: #fff;
+            padding: 7px 13px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-family: monospace;
+            font-size: 11px;
+            z-index: 100;
+            transition: background 0.15s;
+        }
+        #export-btn:hover { background: rgba(255, 255, 255, 0.15); }
+    </style>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19"></script>
+</head>
+<body>
+
+    <button id="export-btn">Export PNG</button>
+
+    <script>
+    // -------------------------------------------------------------------------
+    // Fluid Folds, plate fork
+    //
+    // The main Fluid Folds page maps its fold field through one gradient by
+    // brightness, so any frame is two or three colors deep. This fork draws a
+    // soft-light plate instead: one large fold of light, which has room for as
+    // many hues as the look needs.
+    //
+    // The plate is seven colors. Six sit at elliptical anchors and blend by a
+    // softmax over each anchor's gaussian falloff, so every region takes the
+    // color of whichever anchor dominates it, with soft seams between them.
+    // The seventh is a band of light along a quadratic Bezier: soft on one
+    // side, falling off across the crease on the other, ending in a rounded tip.
+    //
+    // The Aloud plate below was fit to Aloud_plate.jpg rather than eyeballed:
+    // anchor positions, shapes and band geometry by gradient descent against
+    // an 80x45 and then a 160x90 downsample, colors solved exactly by least
+    // squares at each step. The fit lands within about 1.7/255 RMS of the
+    // reference, below the reference's own grain.
+    //
+    // Motion is one loop. Everything moves as a function of a phase that wraps
+    // every Period seconds, and every offset is measured from its value at
+    // phase zero, so the loop opens and closes on the fitted still.
+    //
+    // The fold iteration from index.html does not move this plate. It is
+    // chaotic by design, which is where its folds come from: its gradient
+    // peaks around seventy times its mean displacement, so any warp strong
+    // enough to see creases the plate into hairline streaks. The plate flows
+    // on a few long waves instead, and its colors and band drift on their own.
+    // -------------------------------------------------------------------------
+
+    // Positions are fractions of a 16:9 frame (x right, y down) and may sit off
+    // frame. Size is a gaussian radius in frame heights, Stretch the ratio of
+    // its long axis to its short one, Angle its tilt in degrees, clockwise.
+    const ANCHORS = [
+        { key: 'purple',        name: 'Purple' },
+        { key: 'lightPurple',   name: 'Light Purple' },
+        { key: 'darkPurple',    name: 'Dark Purple' },
+        { key: 'reddishPurple', name: 'Reddish Purple' },
+        { key: 'dirtyPurple',   name: 'Dirty Purple' },
+        { key: 'valley',        name: 'Valley' },
+    ];
+
+    const PRESETS = {
+        Aloud: {
+            purple:        '#845c6e',
+            lightPurple:   '#e3a7b6',
+            darkPurple:    '#221827',
+            reddishPurple: '#482b3f',
+            dirtyPurple:   '#665e6a',
+            valley:        '#372337',
+            glow:          '#ce96a4',
+
+            glowEnd:    0.755,
+            glowTip:    0.281,
+            spreadEnd:  0.105,
+            spreadTip:  0.071,
+            edge:       0.102,
+            softness:   1.0,
+
+            grain:      3.0,
+            grainSize:  0.75,
+            grainCrisp: 0.8,
+            grainColor: 0.2,
+            grainFps:   24,
+
+            paused:     false,
+            period:     30,
+            flow:       0.04,
+            flowSize:   1.6,
+            drift:      0.035,
+            breathe:    0.12,
+
+            layout: {
+                purple:        { x:  0.508, y: 0.124, size: 0.318, stretch:  3.33, angle:   0.7 },
+                lightPurple:   { x:  0.854, y: 0.132, size: 0.248, stretch:  1.40, angle: -32.1 },
+                darkPurple:    { x: -0.181, y: 0.346, size: 0.294, stretch:  0.78, angle:  45.6 },
+                reddishPurple: { x:  0.003, y: 0.762, size: 0.362, stretch: 12.56, angle:  30.0 },
+                dirtyPurple:   { x:  0.624, y: 0.935, size: 0.244, stretch:  3.11, angle: -41.0 },
+                valley:        { x:  0.492, y: 1.007, size: 0.159, stretch:  2.51, angle: -17.3 },
+                band: { endX: 0.955, endY: -0.094, bendX: 0.660, bendY: 0.720, tipX: 0.330, tipY: 0.619 },
+            },
+        },
+    };
+
+    const params = structuredClone(PRESETS.Aloud);
+
+    // -------------------------------------------------------------------------
+    // Three.js scene
+    // -------------------------------------------------------------------------
+    const scene = new THREE.Scene();
+    const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 10);
+    camera.position.z = 1;
+
+    const renderer = new THREE.WebGLRenderer({
+        antialias: false,
+        alpha: false,
+        preserveDrawingBuffer: true
+    });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    // -------------------------------------------------------------------------
+    // Shaders
+    // -------------------------------------------------------------------------
+    const vertexShader = `
+        void main() {
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+    `;
+
+    const fragmentShader = `
+        precision highp float;
+
+        uniform vec2  uResolution;      // drawing buffer, device pixels
+        uniform float uPixelRatio;
+        uniform float uPhase;           // 0..2pi over one loop
+
+        uniform vec2  uAnchor[6];       // design space
+        uniform vec3  uAnchorShape[6];  // (radius along, radius across, angle)
+        uniform vec3  uAnchorColor[6];
+
+        uniform vec2  uBandEnd;
+        uniform vec2  uBandBend;
+        uniform vec2  uBandTip;
+        uniform vec3  uGlow;
+        uniform vec2  uGlowLogit;       // band strength, end and tip, as logits
+        uniform vec2  uSpreadLog;       // soft-side width, end and tip, as logs
+        uniform float uEdge;            // crease-side width
+        uniform float uSoftness;
+
+        uniform float uFlow;
+        uniform float uFlowFreq;
+        uniform float uDrift;
+        uniform float uBreathe;
+
+        uniform float uGrain;           // std dev in 8-bit levels
+        uniform float uGrainSize;       // CSS pixels
+        uniform float uGrainColor;
+        uniform float uGrainCrisp;
+        uniform float uGrainSeed;
+
+        const float DESIGN_ASPECT = 16.0 / 9.0;
+
+        float dot2(vec2 v) { return dot(v, v); }
+
+        // Exact distance to a quadratic Bezier (Inigo Quilez), also returning
+        // the curve parameter of the closest point.
+        float sdBezier(vec2 pos, vec2 A, vec2 B, vec2 C, out float tOut) {
+            vec2 a = B - A;
+            vec2 b = A - 2.0 * B + C;
+            vec2 c = a * 2.0;
+            vec2 d = A - pos;
+            float kk = 1.0 / dot(b, b);
+            float kx = kk * dot(a, b);
+            float ky = kk * (2.0 * dot(a, a) + dot(d, b)) / 3.0;
+            float kz = kk * dot(d, a);
+            float p = ky - kx * kx;
+            float p3 = p * p * p;
+            float q = kx * (2.0 * kx * kx - 3.0 * ky) + kz;
+            float h = q * q + 4.0 * p3;
+            float res;
+            if (h >= 0.0) {
+                h = sqrt(h);
+                vec2 x = (vec2(h, -h) - q) / 2.0;
+                vec2 uv = sign(x) * pow(abs(x), vec2(1.0 / 3.0));
+                float t = clamp(uv.x + uv.y - kx, 0.0, 1.0);
+                res = dot2(d + (c + b * t) * t);
+                tOut = t;
+            } else {
+                float z = sqrt(-p);
+                float v = acos(clamp(q / (p * z * 2.0), -1.0, 1.0)) / 3.0;
+                float m = cos(v);
+                float n = sin(v) * 1.732050808;
+                vec2 t = clamp(vec2(m + m, -n - m) * z - kx, 0.0, 1.0);
+                float d1 = dot2(d + (c + b * t.x) * t.x);
+                float d2 = dot2(d + (c + b * t.y) * t.y);
+                res = min(d1, d2);
+                tOut = d1 < d2 ? t.x : t.y;
+            }
+            return sqrt(res);
+        }
+
+        // Three travelling waves, each displacing across its own direction of
+        // travel. Each is the curl of a sine stream function, so the sum is
+        // divergence-free: the plate swirls without bunching up or thinning
+        // out. They advance one, one and two cycles per loop.
+        vec2 flow(vec2 p, float ph) {
+            const vec2 K1 = vec2( 0.8321, -0.5547);
+            const vec2 K2 = vec2( 0.3122,  0.9500);
+            const vec2 K3 = vec2(-0.9661,  0.2582);
+            vec2 d = vec2(K1.y, -K1.x) * cos(dot(p, K1) * uFlowFreq        + ph       + 0.4)
+                   + vec2(K2.y, -K2.x) * cos(dot(p, K2) * uFlowFreq * 1.3  - ph       + 2.1)
+                   + vec2(K3.y, -K3.x) * cos(dot(p, K3) * uFlowFreq * 0.8  + 2.0 * ph + 4.4);
+            return d / 3.0;
+        }
+
+        // A small figure-eight per index, zero at phase zero.
+        vec2 wander(float i, float ph) {
+            vec2 w  = vec2(sin(ph + i * 2.4),  0.6 * sin(2.0 * ph + i * 1.7 + 0.9));
+            vec2 w0 = vec2(sin(      i * 2.4), 0.6 * sin(             i * 1.7 + 0.9));
+            return w - w0;
+        }
+
+        float hash13(vec3 p3) {
+            p3 = fract(p3 * 0.1031);
+            p3 += dot(p3, p3.zyx + 31.32);
+            return fract((p3.x + p3.y) * p3.z);
+        }
+
+        // Unit-variance uniform noise on an integer lattice. Interpolation and
+        // the band-pass below sum enough of these to read as gaussian.
+        float latticeNoise(vec2 cell, float seed) {
+            return (hash13(vec3(cell, seed)) - 0.5) * 3.4641;
+        }
+
+        // Grain on a lattice rotated off the pixel grid, so bilinear
+        // interpolation never settles into a checkerboard of strong and weak
+        // pixels. Interpolating keeps 2/3 of the deviation per axis on
+        // average, which the final factor restores.
+        float grainNoise(vec2 g, float seed) {
+            vec2 i = floor(g);
+            vec2 f = g - i;
+            float n00 = latticeNoise(i, seed);
+            float n10 = latticeNoise(i + vec2(1.0, 0.0), seed);
+            float n01 = latticeNoise(i + vec2(0.0, 1.0), seed);
+            float n11 = latticeNoise(i + vec2(1.0, 1.0), seed);
+            return mix(mix(n00, n10, f.x), mix(n01, n11, f.x), f.y) * 1.5;
+        }
+
+        // Grain less a share of a three-tap ring 1.5 cells out. The reference's
+        // grain has that dip in its autocorrelation two or three pixels out,
+        // bright specks with dark rims, which is what makes it read as crisp
+        // film rather than as soft noise. Normalized back to unit variance.
+        float crispGrain(vec2 g, float seed) {
+            float ring = grainNoise(g + vec2( 1.5,   0.0),  seed)
+                       + grainNoise(g + vec2(-0.75,  1.299), seed)
+                       + grainNoise(g + vec2(-0.75, -1.299), seed);
+            return (grainNoise(g, seed) - uGrainCrisp * ring / 3.0)
+                 / sqrt(1.0 + uGrainCrisp * uGrainCrisp / 3.0);
+        }
+
+        void main() {
+            // Cover-fit a 16:9 design frame, y down, one unit tall.
+            float aspect = uResolution.x / uResolution.y;
+            vec2 frag = (gl_FragCoord.xy - 0.5 * uResolution) / uResolution.y;
+            frag.y = -frag.y;
+            vec2 p = frag * min(1.0, DESIGN_ASPECT / aspect);
+
+            p += uFlow * (flow(p, uPhase) - flow(p, 0.0));
+
+            // Color anchors
+            float logit[6];
+            float top = -1e9;
+            for (int i = 0; i < 6; i++) {
+                vec2 a = uAnchor[i] + uDrift * wander(float(i), uPhase);
+                vec3 sh = uAnchorShape[i];
+                vec2 v = p - a;
+                float c = cos(sh.z), s = sin(sh.z);
+                vec2 u = vec2(v.x * c + v.y * s, -v.x * s + v.y * c) / (sh.xy * uSoftness);
+                logit[i] = -0.5 * dot(u, u);
+                top = max(top, logit[i]);
+            }
+            vec3 base = vec3(0.0);
+            float wsum = 0.0;
+            for (int i = 0; i < 6; i++) {
+                float w = exp(logit[i] - top);
+                base += w * uAnchorColor[i];
+                wsum += w;
+            }
+            base /= wsum;
+
+            // Light band
+            vec2 bend = uBandBend + uDrift * wander(6.0, uPhase);
+            vec2 tip  = uBandTip  + uDrift * wander(7.0, uPhase);
+            vec2 curl = uBandEnd - 2.0 * bend + tip;
+            if (dot(curl, curl) < 1e-8) bend += vec2(1e-3, -1e-3);
+            float t;
+            float dist = sdBezier(p, uBandEnd, bend, tip, t);
+            vec2 tangent = 2.0 * (1.0 - t) * (bend - uBandEnd) + 2.0 * t * (tip - bend);
+            vec2 onCurve = mix(mix(uBandEnd, bend, t), mix(bend, tip, t), t);
+            vec2 rel = p - onCurve;
+            // Which side of the band a point is on, as the sine of its angle to
+            // the tangent: exactly +-1 alongside the curve, and turning over
+            // smoothly around the tip, where a hard switch would draw a seam.
+            float side = (tangent.x * rel.y - tangent.y * rel.x) / max(length(tangent) * dist, 1e-6);
+            float spread = exp(mix(uSpreadLog.x, uSpreadLog.y, t));
+            float width = mix(uEdge, spread, 0.5 + 0.5 * clamp(side, -1.0, 1.0)) * uSoftness;
+            float profile = exp(-dist * dist / (width * width));
+            float strength = 1.0 / (1.0 + exp(-mix(uGlowLogit.x, uGlowLogit.y, t)));
+            float breath = 1.0 + uBreathe * (sin(uPhase + 0.6) - sin(0.6));
+            float band = clamp(strength * breath * profile, 0.0, 1.0);
+
+            vec3 col = mix(base, uGlow, band);
+
+            // Film grain, mostly luminance and a little stronger in the light,
+            // which is how the reference's grain measures. Size is in CSS
+            // pixels, so it reads the same on any display.
+            float cell = max(uGrainSize * uPixelRatio, 0.25);
+            const mat2 ROT = mat2(0.8776, 0.4794, -0.4794, 0.8776);
+            vec2 g = ROT * gl_FragCoord.xy / cell;
+            float nL = crispGrain(g, uGrainSeed);
+            vec3 nC = vec3(grainNoise(g, uGrainSeed + 101.0),
+                           grainNoise(g, uGrainSeed + 211.0),
+                           grainNoise(g, uGrainSeed + 307.0));
+            vec3 n = mix(vec3(nL), nC, uGrainColor);
+            float luma = dot(col, vec3(0.2126, 0.7152, 0.0722));
+            col += n * (uGrain / 255.0) * (0.8 + 0.5 * luma);
+
+            // Half-level triangular dither so the gradients never band, even
+            // with the grain off.
+            float d = hash13(vec3(gl_FragCoord.xy, uGrainSeed + 500.0))
+                    - hash13(vec3(gl_FragCoord.xy, uGrainSeed + 600.0));
+            col += d / 255.0;
+
+            gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+        }
+    `;
+
+    const uniforms = {
+        uResolution:  { value: new THREE.Vector2() },
+        uPixelRatio:  { value: renderer.getPixelRatio() },
+        uPhase:       { value: 0 },
+        uAnchor:      { value: ANCHORS.map(() => new THREE.Vector2()) },
+        uAnchorShape: { value: ANCHORS.map(() => new THREE.Vector3()) },
+        uAnchorColor: { value: ANCHORS.map(() => new THREE.Color()) },
+        uBandEnd:     { value: new THREE.Vector2() },
+        uBandBend:    { value: new THREE.Vector2() },
+        uBandTip:     { value: new THREE.Vector2() },
+        uGlow:        { value: new THREE.Color() },
+        uGlowLogit:   { value: new THREE.Vector2() },
+        uSpreadLog:   { value: new THREE.Vector2() },
+        uEdge:        { value: 0 },
+        uSoftness:    { value: 1 },
+        uFlow:        { value: 0 },
+        uFlowFreq:    { value: 1 },
+        uDrift:       { value: 0 },
+        uBreathe:     { value: 0 },
+        uGrain:       { value: 0 },
+        uGrainSize:   { value: 1 },
+        uGrainColor:  { value: 0 },
+        uGrainCrisp:  { value: 0 },
+        uGrainSeed:   { value: 0 },
+    };
+
+    const material = new THREE.ShaderMaterial({ vertexShader, fragmentShader, uniforms });
+    scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material));
+
+    // -------------------------------------------------------------------------
+    // Params to uniforms
+    // -------------------------------------------------------------------------
+    const DESIGN_ASPECT = 16 / 9;
+    const toDesign = (x, y, out) => out.set((x - 0.5) * DESIGN_ASPECT, y - 0.5);
+    const logit = v => { const c = Math.min(Math.max(v, 1e-3), 1 - 1e-3); return Math.log(c / (1 - c)); };
+
+    function applyParams() {
+        const L = params.layout;
+        ANCHORS.forEach(({ key }, i) => {
+            const a = L[key];
+            toDesign(a.x, a.y, uniforms.uAnchor.value[i]);
+            const r = Math.sqrt(Math.max(a.stretch, 1e-3));
+            uniforms.uAnchorShape.value[i].set(a.size * r, a.size / r, a.angle * Math.PI / 180);
+            uniforms.uAnchorColor.value[i].set(params[key]);
+        });
+        toDesign(L.band.endX,  L.band.endY,  uniforms.uBandEnd.value);
+        toDesign(L.band.bendX, L.band.bendY, uniforms.uBandBend.value);
+        toDesign(L.band.tipX,  L.band.tipY,  uniforms.uBandTip.value);
+        uniforms.uGlow.value.set(params.glow);
+        uniforms.uGlowLogit.value.set(logit(params.glowEnd), logit(params.glowTip));
+        uniforms.uSpreadLog.value.set(Math.log(Math.max(params.spreadEnd, 1e-4)),
+                                      Math.log(Math.max(params.spreadTip, 1e-4)));
+        uniforms.uEdge.value       = Math.max(params.edge, 1e-4);
+        uniforms.uSoftness.value   = params.softness;
+        uniforms.uFlow.value       = params.flow;
+        uniforms.uFlowFreq.value   = 2 * Math.PI / Math.max(params.flowSize, 0.05);
+        uniforms.uDrift.value      = params.drift;
+        uniforms.uBreathe.value    = params.breathe;
+        uniforms.uGrain.value      = params.grain;
+        uniforms.uGrainSize.value  = params.grainSize;
+        uniforms.uGrainColor.value = params.grainColor;
+        uniforms.uGrainCrisp.value = params.grainCrisp;
+    }
+
+    function resize() {
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.getDrawingBufferSize(uniforms.uResolution.value);
+        uniforms.uPixelRatio.value = renderer.getPixelRatio();
+    }
+
+    applyParams();
+    resize();
+    window.addEventListener('resize', resize);
+
+    document.getElementById('export-btn').addEventListener('click', () => {
+        const a = document.createElement('a');
+        a.download = `fluidfolds-plate-${Date.now()}.png`;
+        a.href = renderer.domElement.toDataURL('image/png');
+        a.click();
+    });
+
+    // -------------------------------------------------------------------------
+    // GUI
+    // -------------------------------------------------------------------------
+    const gui = new lil.GUI({ title: 'Fluid Folds Plate' });
+    gui.onChange(applyParams);
+    const refreshGui = () => gui.controllersRecursive().forEach(c => c.updateDisplay());
+
+    const colorFolder = gui.addFolder('Colors');
+    ANCHORS.forEach(({ key, name }) => colorFolder.addColor(params, key).name(name));
+    colorFolder.addColor(params, 'glow').name('Glow');
+
+    const bandFolder = gui.addFolder('Light Band');
+    bandFolder.add(params, 'glowEnd',   0, 1, 0.001).name('Glow at End');
+    bandFolder.add(params, 'glowTip',   0, 1, 0.001).name('Glow at Tip');
+    bandFolder.add(params, 'spreadEnd', 0.01, 0.3, 0.001).name('Spread at End');
+    bandFolder.add(params, 'spreadTip', 0.01, 0.3, 0.001).name('Spread at Tip');
+    bandFolder.add(params, 'edge',      0.01, 0.3, 0.001).name('Edge');
+    bandFolder.add(params, 'softness',  0.25, 3, 0.01).name('Softness');
+
+    const grainFolder = gui.addFolder('Grain');
+    grainFolder.add(params, 'grain',      0, 12, 0.1).name('Amount');
+    grainFolder.add(params, 'grainSize',  0.25, 3, 0.05).name('Size');
+    grainFolder.add(params, 'grainCrisp', 0, 1, 0.01).name('Crisp');
+    grainFolder.add(params, 'grainColor', 0, 1, 0.01).name('Color');
+    grainFolder.add(params, 'grainFps',   0, 60, 1).name('FPS (0 holds)');
+
+    const motionFolder = gui.addFolder('Motion');
+    motionFolder.add(params, 'paused').name('Pause');
+    motionFolder.add(params, 'period',    5, 90, 1).name('Period (s)');
+    motionFolder.add(params, 'flow',      0, 0.15, 0.001).name('Flow');
+    motionFolder.add(params, 'flowSize',  0.3, 4, 0.01).name('Flow Size');
+    motionFolder.add(params, 'drift',     0, 0.15, 0.001).name('Drift');
+    motionFolder.add(params, 'breathe',   0, 0.5, 0.005).name('Breathe');
+
+    const layoutFolder = gui.addFolder('Layout');
+    const bandLayout = layoutFolder.addFolder('Light Band');
+    [['endX', 'End X'], ['endY', 'End Y'], ['bendX', 'Bend X'], ['bendY', 'Bend Y'], ['tipX', 'Tip X'], ['tipY', 'Tip Y']]
+        .forEach(([k, n]) => bandLayout.add(params.layout.band, k, -0.5, 1.5, 0.001).name(n));
+    bandLayout.close();
+    ANCHORS.forEach(({ key, name }) => {
+        const f = layoutFolder.addFolder(name);
+        const a = params.layout[key];
+        f.add(a, 'x',       -0.5, 1.5, 0.001).name('X');
+        f.add(a, 'y',       -0.5, 1.5, 0.001).name('Y');
+        f.add(a, 'size',    0.02, 1.5, 0.001).name('Size');
+        f.add(a, 'stretch', 0.1, 15, 0.01).name('Stretch');
+        f.add(a, 'angle',   -90, 90, 0.1).name('Angle');
+        f.close();
+    });
+    layoutFolder.close();
+
+    // The async Clipboard API is permission-denied inside embedded preview
+    // webviews, so each action falls back to a native prompt() dialog, and the
+    // button label says which path it took.
+    let copyCtrl, pasteCtrl;
+    function flashCtrl(ctrl, msg, baseName) {
+        ctrl.name(msg);
+        setTimeout(() => ctrl.name(baseName), 1500);
+    }
+
+    // Layout objects are bound to controllers, so settings are written into
+    // them in place rather than replaced.
+    function loadSettings(s) {
+        const { layout, ...rest } = structuredClone(s);
+        Object.assign(params, rest);
+        if (layout) {
+            for (const k of Object.keys(params.layout)) {
+                if (layout[k]) Object.assign(params.layout[k], layout[k]);
+            }
+        }
+        applyParams();
+        refreshGui();
+    }
+
+    const settingsIO = {
+        copy: async () => {
+            const json = JSON.stringify(params);
+            try {
+                await navigator.clipboard.writeText(json);
+                flashCtrl(copyCtrl, 'Copied ✓', 'Copy to clipboard');
+            } catch (e) {
+                console.log('Fluid Folds Plate settings:', json);
+                window.prompt('Clipboard blocked here - copy this (Cmd/Ctrl+C):', json);
+                flashCtrl(copyCtrl, 'Copy from dialog', 'Copy to clipboard');
+            }
+        },
+        paste: async () => {
+            let txt = null;
+            try { txt = await navigator.clipboard.readText(); } catch (e) { txt = null; }
+            if (!txt) txt = window.prompt('Paste settings JSON (Cmd/Ctrl+V), then OK:', '');
+            if (!txt) return;
+            try {
+                loadSettings(JSON.parse(txt));
+                flashCtrl(pasteCtrl, 'Loaded ✓', 'Paste from clipboard');
+            } catch (e) {
+                console.warn('Paste failed:', e);
+                flashCtrl(pasteCtrl, 'Invalid JSON ✗', 'Paste from clipboard');
+            }
+        },
+        reset: () => { loadSettings(PRESETS.Aloud); state.phase = 0; },
+    };
+    const settingsFolder = gui.addFolder('Settings');
+    copyCtrl  = settingsFolder.add(settingsIO, 'copy').name('Copy to clipboard');
+    pasteCtrl = settingsFolder.add(settingsIO, 'paste').name('Paste from clipboard');
+    settingsFolder.add(settingsIO, 'reset').name('Reset to Aloud');
+    settingsFolder.close();
+
+    // -------------------------------------------------------------------------
+    // Loop
+    // -------------------------------------------------------------------------
+    const state = { phase: 0, grainClock: 0 };
+
+    // Reduced motion starts on the still, grain held.
+    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        params.paused = true;
+        params.grainFps = 0;
+        refreshGui();
+    }
+
+    const clock = new THREE.Clock();
+
+    function animate() {
+        requestAnimationFrame(animate);
+        const dt = Math.min(clock.getDelta(), 0.1);
+
+        if (!params.paused) {
+            state.phase = (state.phase + dt * 2 * Math.PI / Math.max(params.period, 1)) % (2 * Math.PI);
+        }
+        uniforms.uPhase.value = state.phase;
+
+        if (params.grainFps > 0) {
+            state.grainClock += dt;
+            uniforms.uGrainSeed.value = Math.floor(state.grainClock * params.grainFps) % 997;
+        }
+
+        renderer.render(scene, camera);
+    }
+    animate();
+    </script>
+</body>
+</html>
