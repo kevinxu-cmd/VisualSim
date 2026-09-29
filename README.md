@@ -138,7 +138,7 @@ H.264 MP4 is written where the browser can encode it, with VP9 or VP8 WebM as th
 </tr>
 </table>
 
-Three templates: **Wave**, a wide spectrum with bumpy heights across the full width, **Slope**, a narrower mountain rising left to right, and **Tangerine**, the Wave shape centered in the `tangerine` ramp with a deep blue accent.
+Four templates: **Wave**, a wide spectrum with bumpy heights across the full width, **Slope**, a narrower mountain rising left to right, **Tangerine**, the Wave shape centered in the `tangerine` ramp with a deep blue accent, and **Ember**, Tangerine in burnt orange and amber with jittered widths and the blue spread through the body.
 
 <details>
 <summary>Saved settings for the two frames above</summary>

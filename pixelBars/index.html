@@ -18,9 +18,11 @@
 // bottom). Each filled cell picks a color from the 4-stop palette by
 // blending the cell's vertical position with FBM noise.
 //
-// Two preset templates:
-//   • Wave  — wide spectrum with bumpy heights across the full width
-//   • Slope — narrower mountain shape rising left→right with a peak
+// Four preset templates:
+//   • Wave      - wide spectrum with bumpy heights across the full width
+//   • Slope     - narrower mountain shape rising left→right with a peak
+//   • Tangerine - the Wave shape, centered, in the tangerine ramp
+//   • Ember     - Tangerine in burnt orange and amber, with jittered widths
 // ─────────────────────────────────────────────
 
 const MAX_COLS = 128;
@@ -492,6 +494,25 @@ const TEMPLATES = {
         accentAmount: 0.835, accentDensity: 0.735, accentEdgeBias: 0.67,
         animateColors: true, animateAccents: true, animateHeights: false, timeScale: 1.0,
     },
+    // Tangerine with a burnt orange second stop and an amber third, widths
+    // jittered and swelling toward the base, and the tangerine palette's own
+    // blue accent spread through the body rather than held to the edges.
+    ember: {
+        template: 'wave',
+        palette: 'custom',
+        color1: '#ff5500', color2: '#d95e12', color3: '#ffab3d', color4: '#fffff3',
+        cols: 70, rows: 25, colGap: 0.04, rowGap: 0.005,
+        visualWidth: 1.00, visualXCenter: 0.51, visualHeight: 1.00,
+        heightBase: 0.10, heightVariance: 0.67, heightTrend: 0.245,
+        freqScale: 3.6, heightSeed: 91.22077976852206,
+        noiseScale: 2.0, noiseAmount: 0.365, hueJitter: 0.085, topBoost: 1.0, topBoostRows: 4.0,
+        topNarrow: 0.455, topRows: 1.3,
+        widthJitter: 0.28,
+        vertWidthVar: 1.0, vertWidthScale: 1.33,
+        accentColor: '#2179B0', accentHarmony: 'manual', accentPastel: 1.0,
+        accentAmount: 0.745, accentDensity: 0.745, accentEdgeBias: 0.29,
+        animateColors: true, animateAccents: true, animateHeights: false, timeScale: 1.0,
+    },
 };
 
 function applyTemplate(name) {
@@ -574,6 +595,7 @@ const fT = gui.addFolder('Template');
 fT.add({ wave:  () => applyTemplate('wave')  }, 'wave').name('Apply: Wave (spectrum)');
 fT.add({ slope: () => applyTemplate('slope') }, 'slope').name('Apply: Slope (mountain)');
 fT.add({ tangerine: () => applyTemplate('tangerine') }, 'tangerine').name('Apply: Tangerine (warm wave)');
+fT.add({ ember: () => applyTemplate('ember') }, 'ember').name('Apply: Ember (burnt orange wave)');
 
 const fC = gui.addFolder('Palette');
 
